@@ -194,3 +194,37 @@ private struct AccountsSettingsPane: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
                 Divider()
+                SettingsAccountDetail(account: account, back: {
+                    if self.selected == account.id { self.selected = nil }
+                })
+                    .disabled(viewModel.isReadOnlyPreview)
+            } else {
+                Form {
+                    ForEach(ServiceType.allCases, id: \.self) { provider in
+                        Section {
+                            let serviceAccounts = accounts.filter { $0.provider == provider }
+                            if serviceAccounts.isEmpty {
+                                Text("No accounts yet").foregroundStyle(.secondary)
+                            }
+                            ForEach(serviceAccounts) { account in
+                                accountRow(account)
+                            }
+                            Button { connect(provider) } label: {
+                                HStack {
+                                    Label("Add \(provider.displayName) Account…", systemImage: "plus")
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                                .background(hoveredAddProvider == provider ? Color.brand.opacity(0.08) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 7))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(.brand)
+                            .disabled(connecting || viewModel.isReadOnlyPreview)
+                            .onHover { hoveredAddProvider = $0 ? provider : nil }
+                        } header: {
+                            Text(provider.displayName)
+                        } footer: {
+                            if provider == .claude, !accounts.isEmpty {
+                                Text("Drag account cards in the menu bar popover to change their order. Open an account to mana")
