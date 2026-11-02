@@ -186,6 +186,9 @@ private extension QuotaEntry {
                 detailFooter: usage.sevenDayResetAfterSeconds.map { widgetCountdownText(prefix: "7d resets", seconds: $0) } ?? "",
                 alertText: usage.limitReached ? "Limit reached" : nil
             )
+
+        case .cursor:
+            return nil
         }
     }
 }
@@ -689,6 +692,9 @@ struct WidgetMediumView: View {
             } else {
                 emptySlot(icon: "logo-claude", label: "Claude Code")
             }
+
+        case .cursor:
+            return nil
         }
     }
 
