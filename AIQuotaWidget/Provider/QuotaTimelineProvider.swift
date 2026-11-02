@@ -37,6 +37,7 @@ private extension ServiceOption {
         switch self {
         case .codex: return .codex
         case .claude: return .claude
+        case .cursor: return .cursor
         }
     }
 }
