@@ -1,1 +1,1 @@
-@file:///tmp/ping-content.txt
+/tmp/READY_INVOKE_43k.json
