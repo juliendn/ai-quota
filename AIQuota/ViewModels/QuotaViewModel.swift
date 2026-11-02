@@ -430,4 +430,55 @@ final class QuotaViewModel {
 
     // MARK: - Auth state (derived from coordinator streams)
 
-    var claudeState: AuthStat
+    var claudeState: AuthState = .unknown
+    var codexState:  AuthState = .unknown
+    var cursorState: AuthState = .unknown
+
+    var isClaudeAuthenticated: Bool { claudeState == .authenticated }
+    var isCodexAuthenticated:  Bool { codexState  == .authenticated }
+    var isCursorAuthenticated: Bool { cursorState == .authenticated }
+    var isCodexRecovering: Bool { isCodexRecoveryPending || codexState == .unknown || codexState == .restoringSession || codexState == .signingIn }
+    var isClaudeRecovering: Bool { isClaudeRecoveryPending || claudeState == .unknown || claudeState == .restoringSession }
+    var isCursorRecovering: Bool { isCursorRecoveryPending || cursorState == .unknown || cursorState == .restoringSession }
+    var isRestoringSession: Bool {
+        isCodexRecovering || isClaudeRecovering || isCursorRecovering
+    }
+
+    private let resetCoordinator: AppResetCoordinator
+
+    // MARK: - Shared state
+
+    var settings: AppSettings = SharedDefaults.loadSettings()
+    private var lastSavedSettings: AppSettings = SharedDefaults.loadSettings()
+    /// Which service's panel is visible in the popover.
+    var activeService: ServiceType = .codex
+
+    // MARK: - Enrollment
+
+    /// Persisted in SharedDefaults (app-group) so the widget can read it.
+    /// Populated from first successful sign-in; cleared only on explicit Sign Out or reset.
+    var enrolledServices: Set<ServiceType> = SharedDefaults.loadEnrolledServices()
+
+    var isCodexEnrolled: Bool { enrolledServices.contains(.codex) }
+    var isClaudeEnrolled: Bool { enrolledServices.contains(.claude) }
+    var isCursorEnrolled: Bool { enrolledServices.contains(.cursor) }
+    private var isCodexRecoveryPending = false
+    private var isClaudeRecoveryPending = false
+    private var isCursorRecoveryPending = false
+    /// Set when enrolled-session recovery definitively failed (all sources
+    /// rejected). Blocks popover-open recovery retries — which would just replay
+    /// the same spinner — until fresh Claude Code credentials appear or the user
+    /// signs in.
+    private var claudeRecoveryExhausted = false
+
+    // MARK: - Onboarding
+
+    /// True if the user has never completed the onboarding wizard.
+    var shouldShowOnboarding: Bool {
+        !UserDefaults.standard.bool(forKey: "onboarding.v1.hasCompleted")
+            && !onboardingTriggeredThisSession
+    }
+
+    /// Set to true after the window has been opened once per session,
+    /// so clicking the menu bar icon repeatedly doesn't re-open it.
+    private(set) var
