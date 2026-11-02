@@ -570,3 +570,105 @@ private struct SettingsDiagnostics: View {
     }
 
     private func statusDetail(isAuthenticated: Bool, attempt: CodexSourceAttempt?) -> String {
+        guard isAuthenticated else { return "Not signed in" }
+        guard let attempt else { return "Not checked yet" }
+        if attempt.errorCategory == .success {
+            return "\(sourceName(attempt.source)) · checked \(relativeTime(attempt.timestamp))"
+        }
+        return "\(statusMessage(for: attempt.errorCategory)) · checked \(relativeTime(attempt.timestamp))"
+    }
+
+    private func statusDetail(isAuthenticated: Bool, attempt: ClaudeSourceAttempt?) -> String {
+        guard isAuthenticated else { return "Not signed in" }
+        guard let attempt else { return "Not checked yet" }
+        if attempt.errorCategory == .success {
+            return "\(sourceName(attempt.source)) · checked \(relativeTime(attempt.timestamp))"
+        }
+        return "\(statusMessage(for: attempt.errorCategory)) · checked \(relativeTime(attempt.timestamp))"
+    }
+
+    private func statusColor(isAuthenticated: Bool, attempt: CodexSourceAttempt?) -> Color {
+        guard isAuthenticated, let attempt else { return .secondary }
+        switch attempt.errorCategory {
+        case .success:
+            return .green
+        case .authFailed:
+            return .red
+        case .rateLimited, .serverError, .network, .invalidResponse:
+            return .orange
+        }
+    }
+
+    private func statusColor(isAuthenticated: Bool, attempt: ClaudeSourceAttempt?) -> Color {
+        guard isAuthenticated, let attempt else { return .secondary }
+        switch attempt.errorCategory {
+        case .success:
+            return .green
+        case .missingCredentials, .expiredCredentials, .missingScope, .malformedCredentials, .authFailed, .policyBlocked:
+            return .red
+        case .rateLimited, .serverError, .network, .invalidResponse:
+            return .orange
+        }
+    }
+
+    private func copyDiagnostics() {
+        reload()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(diagnosticsReport(), forType: .string)
+    }
+
+    private func diagnosticsReport() -> String {
+        var lines: [String] = [
+            "AIQuota auth diagnostics",
+            "Generated: \(Self.timestampFormatter.string(from: .now))",
+            "",
+            "Codex attempts:"
+        ]
+        lines.append(contentsOf: codexAttempts.map(codexLine))
+        if codexAttempts.isEmpty { lines.append("- none") }
+
+        lines.append("")
+        lines.append("Claude attempts:")
+        lines.append(contentsOf: claudeAttempts.map(claudeLine))
+        if claudeAttempts.isEmpty { lines.append("- none") }
+        return lines.joined(separator: "\n")
+    }
+
+    private func codexLine(_ attempt: CodexSourceAttempt) -> String {
+        "- \(Self.timestampFormatter.string(from: attempt.timestamp)) source=\(attempt.source.rawValue) category=\(attempt.errorCategory.rawValue) httpStatus=\(attempt.httpStatus.map(String.init) ?? "none")"
+    }
+
+    private func claudeLine(_ attempt: ClaudeSourceAttempt) -> String {
+        "- \(Self.timestampFormatter.string(from: attempt.timestamp)) source=\(attempt.source.rawValue) category=\(attempt.errorCategory.rawValue) httpStatus=\(attempt.httpStatus.map(String.init) ?? "none")"
+    }
+
+    private func sourceName(_ source: CodexAuthSource) -> String {
+        switch source {
+        case .codexOAuth: "CLI OAuth"
+        case .webSession: "Web"
+        case .unknown: "Unknown"
+        }
+    }
+
+    private func sourceName(_ source: ClaudeUsage.Source) -> String {
+        switch source {
+        case .oauth: "Claude Code"
+        case .web: "Web"
+        case .unknown: "Unknown"
+        }
+    }
+
+    private func categoryName(_ rawValue: String) -> String {
+        rawValue
+            .replacingOccurrences(
+                of: "([a-z])([A-Z])",
+                with: "$1 $2",
+                options: .regularExpression
+            )
+            .capitalized
+    }
+
+    private func statusMessage(for category: CodexSourceAttempt.ErrorCategory) -> String {
+        switch category {
+        case .success:
