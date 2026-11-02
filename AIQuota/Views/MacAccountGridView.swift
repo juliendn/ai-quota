@@ -69,7 +69,7 @@ struct MacAccountGridView: View {
                 leadingContent
                 VStack(alignment: .leading, spacing: CGFloat(MacAccountGridLayout.cardSpacing)) {
                     if accounts.isEmpty {
-                        ForEach([ServiceType.codex, .claude], id: \.self) { service in
+                        ForEach(ServiceType.allCases, id: \.self) { service in
                             MacAccountPlaceholderRow(service: service, availableWidth: cardContentWidth,
                                                      highlighted: highlight(service.rawValue),
                                                      connect: { connect(service) })
