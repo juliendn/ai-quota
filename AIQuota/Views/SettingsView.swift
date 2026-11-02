@@ -194,3 +194,160 @@ private struct AccountsSettingsPane: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
                 Divider()
+                SettingsAccountDetail(account: account, back: {
+                    if self.selected == account.id { self.selected = nil }
+                })
+                    .disabled(viewModel.isReadOnlyPreview)
+            } else {
+                Form {
+                    ForEach(ServiceType.allCases, id: \.self) { provider in
+                        Section {
+                            let serviceAccounts = accounts.filter { $0.provider == provider }
+                            if serviceAccounts.isEmpty {
+                                Text("No accounts yet").foregroundStyle(.secondary)
+                            }
+                            ForEach(serviceAccounts) { account in
+                                accountRow(account)
+                            }
+                            Button { connect(provider) } label: {
+                                HStack {
+                                    Label("Add \(provider.displayName) Account…", systemImage: "plus")
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                                .background(hoveredAddProvider == provider ? Color.brand.opacity(0.08) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 7))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(.brand)
+                            .disabled(connecting || viewModel.isReadOnlyPreview)
+                            .onHover { hoveredAddProvider = $0 ? provider : nil }
+                        } header: {
+                            Text(provider.displayName)
+                        } footer: {
+                            if provider == .claude, !accounts.isEmpty {
+                                Text("Drag account cards in the menu bar popover to change their order. Open an account to manage its connection and menu bar gauge.")
+                            }
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+                .frame(maxWidth: 680)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: RunLoop.main)) { _ in reloadAccounts() }
+        .onChange(of: viewModel.additionalAccounts.map(\.id)) { reloadAccounts() }
+        .onChange(of: viewModel.enrolledServices) { reloadAccounts() }
+        .onChange(of: selected) { _, id in if id == nil { reloadAccounts() } }
+        .onAppear(perform: reloadAccounts)
+        .sheet(item: $connectedAccount) { account in
+            ConnectedAccountNameSheet(account: account, dismiss: { connectedAccount = nil }) { name, showInMenuBar in
+                viewModel.saveConnectedAccount(id: account.id, name: name, showInMenuBar: showInMenuBar)
+                connectedAccount = nil
+                reloadAccounts()
+            }
+        }
+        .alert(viewModel.connectAccountNotice ?? "", isPresented: Binding(
+            get: { viewModel.connectAccountNotice != nil },
+            set: { if !$0 { viewModel.connectAccountNotice = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Nothing new was added. Sign in with a different account to connect another one.")
+        }
+    }
+
+    private func connect(_ provider: ServiceType) {
+        connecting = true
+        Task {
+            connectedAccount = await viewModel.connectAccount(for: provider)
+            connecting = false
+            reloadAccounts()
+        }
+    }
+
+    private func reloadAccounts() { accounts = AccountRegistry.orderedAccounts() }
+
+    private func accountRow(_ account: ConnectedAccount) -> some View {
+        let status = AccountConnectionStatus(account: account, viewModel: viewModel)
+        let needsDisambiguation = accounts.filter {
+            $0.provider == account.provider && $0.displayLabel == account.displayLabel
+        }.count > 1
+        let shownInMenuBar = viewModel.settings.menuBarAccountIDs?.contains(account.id) == true
+        return Button { selected = account.id } label: {
+            HStack(spacing: 12) {
+                Image(account.provider == .codex ? "logo-openai" : account.provider == .claude ? "logo-claude" : "logo-cursor")
+                    .resizable().scaledToFit().frame(width: 24, height: 24)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(account.displayLabel)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    if needsDisambiguation {
+                        Text("ID …" + String((account.workspaceID ?? account.id).suffix(6)))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if shownInMenuBar {
+                        Text("Shown in menu bar")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 5) {
+                    Image(systemName: status.symbol).foregroundStyle(status.color)
+                    Text(status.summary).foregroundStyle(.secondary)
+                }
+                .font(.callout).lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(account.provider.displayName), \(account.displayLabel), \(status.summary)\(shownInMenuBar ? ", shown in menu bar" : "")")
+        .accessibilityHint("Open account settings")
+    }
+}
+
+@MainActor
+struct AccountConnectionStatus {
+    let account: ConnectedAccount
+    let viewModel: QuotaViewModel
+    var session: AdditionalAccountSession? {
+        account.connectionKind == .isolated ? viewModel.additionalAccounts.first { $0.id == account.id } : nil
+    }
+    var connected: Bool {
+        if account.connectionKind == .isolated { return session?.isAuthenticated == true }
+        return account.provider == .codex ? viewModel.isCodexAuthenticated : viewModel.isClaudeAuthenticated
+    }
+    var issue: String? {
+        if account.connectionKind == .isolated { return session?.issue }
+        return account.provider == .codex ? viewModel.codexError?.localizedDescription : viewModel.claudeError?.localizedDescription
+    }
+    var summary: String { !connected ? "Not signed in" : issue == nil ? "Connected" : "Couldn’t refresh usage" }
+    var symbol: String { !connected ? "minus.circle" : issue == nil ? "checkmark.circle.fill" : "exclamationmark.triangle.fill" }
+    var color: Color { !connected ? .secondary : issue == nil ? .green : .orange }
+}
+
+private struct SettingsAccountDetail: View {
+    @Environment(QuotaViewModel.self) private var viewModel
+    let account: ConnectedAccount
+    let back: () -> Void
+    @State private var name = ""
+    @State private var pendingAction: String?
+    @State private var busy = false
+    @AppStorage(ClaudeOAuthKeychainReader.consentDefaultsKey) private var reuseClaudeCodeKeychain = false
+
+    var body: some View {
+        let status = AccountConnectionStatus(account: account, viewModel: viewModel)
+        Form {
+            Section("Account") {
+                TextField("Display name", text: $name)
+                    .onSubmit(saveName)
+                LabeledContent("Service", value: account.provider.displayName)
+                if let identity = account.workspaceID {
+                    LabeledContent("Workspace ID", value: identity).textSelection(.enabled)
