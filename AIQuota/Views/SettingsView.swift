@@ -227,4 +227,48 @@ private struct AccountsSettingsPane: View {
                             Text(provider.displayName)
                         } footer: {
                             if provider == .claude, !accounts.isEmpty {
-                                Text("Drag account cards in the menu bar popover to change their order. Open an account to mana")
+                                Text("Drag account cards in the menu bar popover to change their order. Open an account to manage its connection and menu bar gauge.")
+                            }
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+                .frame(maxWidth: 680)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: RunLoop.main)) { _ in reloadAccounts() }
+        .onChange(of: viewModel.additionalAccounts.map(\.id)) { reloadAccounts() }
+        .onChange(of: viewModel.enrolledServices) { reloadAccounts() }
+        .onChange(of: selected) { _, id in if id == nil { reloadAccounts() } }
+        .onAppear(perform: reloadAccounts)
+        .sheet(item: $connectedAccount) { account in
+            ConnectedAccountNameSheet(account: account, dismiss: { connectedAccount = nil }) { name, showInMenuBar in
+                viewModel.saveConnectedAccount(id: account.id, name: name, showInMenuBar: showInMenuBar)
+                connectedAccount = nil
+                reloadAccounts()
+            }
+        }
+        .alert(viewModel.connectAccountNotice ?? "", isPresented: Binding(
+            get: { viewModel.connectAccountNotice != nil },
+            set: { if !$0 { viewModel.connectAccountNotice = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Nothing new was added. Sign in with a different account to connect another one.")
+        }
+    }
+
+    private func connect(_ provider: ServiceType) {
+        connecting = true
+        Task {
+            connectedAccount = await viewModel.connectAccount(for: provider)
+            connecting = false
+            reloadAccounts()
+        }
+    }
+
+    private func reloadAccounts() { accounts = AccountRegistry.orderedAccounts() }
+
+    private func accountRow(_ account: ConnectedAccount) -> some View {
+        let status = AccountConnectionStatus(account: account, viewModel: viewModel)
