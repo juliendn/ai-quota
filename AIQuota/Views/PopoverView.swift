@@ -101,4 +101,115 @@ struct PopoverView: View {
         }
         .onDisappear { resetNavigation() }
         .onChange(of: viewModel.enrolledServices) { _, services in
-            if let selectedService, !services.contains(selectedService) { resetNavig
+            if let selectedService, !services.contains(selectedService) { resetNavigation() }
+        }
+    }
+
+    private var pageContent: some View {
+        ZStack(alignment: .topLeading) {
+            gridAuthenticatedContent
+            .frame(width: overviewWidth)
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                if height > 0, navigationPhase == .overview, overviewHeight != height { overviewHeight = height }
+            }
+            // Crossfade into the overview before the native window begins its
+            // close so the returning panel always has content while shrinking.
+            .modifier(PopoverPageVisibility(isVisible: navigationPhase.showsOverview,
+                                            reduceMotion: reduceMotion, distance: 0, onHidden: {}))
+            .allowsHitTesting(navigationPhase == .overview)
+            .accessibilityHidden(navigationPhase != .overview)
+
+            if let selectedService {
+                    Group {
+                        if let selectedAccountID,
+                           let session = viewModel.additionalAccounts.first(where: { $0.id == selectedAccountID }) {
+                            MacAdditionalAccountDetailView(session: session, height: detailSize.height,
+                                                           close: closeService, openSettings: openSettingsWindow,
+                                                           reconnect: {
+                                                               Task { await viewModel.reconnectAccount(id: session.id) }
+                                                           })
+                        } else {
+                            ServiceDetailView(service: selectedService, height: detailSize.height,
+                                              close: closeService, reconnect: {
+                                                  Task {
+                                                      switch selectedService {
+                                                      case .codex: await viewModel.signIn()
+                                                      case .claude: await viewModel.signInClaude()
+                                                      case .cursor: await viewModel.signInCursor()
+                                                      }
+                                                  }
+                                              })
+                        }
+                    }
+                    .frame(width: detailSize.width)
+                    // A provider can have several accounts. Give each detail
+                    // its own navigation and scroll state when switching cards.
+                    .id("\(selectedService.rawValue):\(selectedAccountID ?? "primary")")
+                    // Start revealing the detail as the window expands. Waiting
+                    // for the resize completion leaves a blank full-height panel.
+                    .modifier(PopoverPageVisibility(isVisible: navigationPhase.showsDetail,
+                                                    reduceMotion: reduceMotion, distance: 6,
+                                                    onHidden: finishDetailFade))
+                    .allowsHitTesting(navigationPhase == .detail)
+                    .accessibilityHidden(navigationPhase != .detail)
+            }
+        }
+        .frame(width: popoverLayoutSize.width, height: popoverLayoutSize.height, alignment: .topLeading)
+        .clipped()
+        .background { popoverSurface }
+        .background {
+            Button("") { viewModel.manualRefresh() }
+                .keyboardShortcut("r", modifiers: .command)
+                .hidden()
+        }
+    }
+
+    private func finishNavigationResize(_ size: CGSize) {
+        guard size == popoverSize else { return }
+        switch navigationPhase {
+        case .expanding:
+            navigationPhase = .detail
+        case .shrinking:
+            selectedService = nil
+            selectedAccountID = nil
+            navigationPhase = .overview
+        default:
+            break
+        }
+    }
+
+    private func closeService() {
+        guard navigationPhase == .detail else { return }
+        if reduceMotion {
+            resetNavigation()
+            return
+        }
+        navigationPhase = .fadingDetail
+    }
+
+    private func finishDetailFade() {
+        guard navigationPhase == .fadingDetail else { return }
+        if detailSize == overviewSize {
+            selectedService = nil
+            selectedAccountID = nil
+            navigationPhase = .overview
+        } else {
+            navigationPhase = .shrinking
+        }
+    }
+
+    private func resetNavigation() {
+        selectedService = nil
+        selectedAccountID = nil
+        navigationPhase = .overview
+        hoveredService = nil
+        focusedService = nil
+        presentationID += 1
+    }
+
+    @ViewBuilder
+    private var popoverSurface: some View {
+        ZStack {
+            if #available(macOS 26.0, *) {
+   
