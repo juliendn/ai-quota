@@ -1,0 +1,210 @@
+ble: navigationPhase.showsDetail,
+                                                    reduceMotion: reduceMotion, distance: 6,
+                                                    onHidden: finishDetailFade))
+                    .allowsHitTesting(navigationPhase == .detail)
+                    .accessibilityHidden(navigationPhase != .detail)
+            }
+        }
+        .frame(width: popoverLayoutSize.width, height: popoverLayoutSize.height, alignment: .topLeading)
+        .clipped()
+        .background { popoverSurface }
+        .background {
+            Button("") { viewModel.manualRefresh() }
+                .keyboardShortcut("r", modifiers: .command)
+                .hidden()
+        }
+    }
+
+    private func finishNavigationResize(_ size: CGSize) {
+        guard size == popoverSize else { return }
+        switch navigationPhase {
+        case .expanding:
+            navigationPhase = .detail
+        case .shrinking:
+            selectedService = nil
+            selectedAccountID = nil
+            navigationPhase = .overview
+        default:
+            break
+        }
+    }
+
+    private func closeService() {
+        guard navigationPhase == .detail else { return }
+        if reduceMotion {
+            resetNavigation()
+            return
+        }
+        navigationPhase = .fadingDetail
+    }
+
+    private func finishDetailFade() {
+        guard navigationPhase == .fadingDetail else { return }
+        if detailSize == overviewSize {
+            selectedService = nil
+            selectedAccountID = nil
+            navigationPhase = .overview
+        } else {
+            navigationPhase = .shrinking
+        }
+    }
+
+    private func resetNavigation() {
+        selectedService = nil
+        selectedAccountID = nil
+        navigationPhase = .overview
+        hoveredService = nil
+        focusedService = nil
+        presentationID += 1
+    }
+
+    @ViewBuilder
+    private var popoverSurface: some View {
+        ZStack {
+            if #available(macOS 26.0, *) {
+                // A partial blur over the menu-bar window's glass. At full
+                // strength any SwiftUI material here made the sheet read as opaque;
+                // with none, shapes and text behind stayed too sharp.
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .opacity(0.7)
+            } else {
+                // Sequoia's MenuBarExtra material is substantially more transparent
+                // than Tahoe's glass treatment. Stabilize contrast while retaining a
+                // small amount of desktop color.
+                Rectangle()
+                    .fill(.regularMaterial)
+                    .overlay {
+                        Color(nsColor: .windowBackgroundColor).opacity(0.92)
+                    }
+            }
+            sheetTint
+        }
+    }
+
+    // Plum glass over the window's own glass: a 53% tint (66% in light) lets the
+    // desktop through; captions are near-white / deep plum to stay legible.
+    private var sheetTint: some View {
+        ZStack {
+            Color.sheetTint
+            EllipticalGradient(colors: [.sheetGlow, .clear], center: .topLeading,
+                               startRadiusFraction: 0, endRadiusFraction: 0.75)
+            EllipticalGradient(colors: [.sheetGlowTrailing, .clear], center: .bottomTrailing,
+                               startRadiusFraction: 0, endRadiusFraction: 0.6)
+        }
+        .overlay { sheetRim }
+        .allowsHitTesting(false)
+    }
+
+    // Specular edge, brightest at the top-leading corner, for the Liquid Glass read.
+    @ViewBuilder
+    private var sheetRim: some View {
+        if #available(macOS 26.0, *) {
+            ContainerRelativeShape()
+                .strokeBorder(
+                    LinearGradient(stops: [
+                        .init(color: .sheetRim, location: 0),
+                        .init(color: .sheetRim.opacity(0.15), location: 0.35),
+                        .init(color: .clear, location: 0.6),
+                        .init(color: .sheetRim.opacity(0.35), location: 1),
+                    ], startPoint: .topLeading, endPoint: .bottomTrailing),
+                    lineWidth: 1
+                )
+        }
+    }
+
+    private func openSettingsWindow() {
+        menuBarWindow?.orderOut(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        openSettings()
+    }
+
+    // MARK: - Authenticated layout
+
+    private var visibleServices: [ServiceType] {
+        ServiceType.allCases.filter { viewModel.enrolledServices.contains($0) }
+    }
+
+    private func canOpen(_ service: ServiceType) -> Bool {
+        switch service {
+        case .codex: viewModel.isCodexAuthenticated || viewModel.codexUsage != nil
+        case .claude: viewModel.isClaudeAuthenticated || viewModel.claudeUsage != nil
+        case .cursor: viewModel.isCursorAuthenticated || viewModel.cursorUsage != nil
+        }
+    }
+
+    private func openService(_ service: ServiceType) {
+        guard canOpen(service), navigationPhase == .overview else { return }
+        hoveredService = nil
+        focusedService = nil
+        selectedService = service
+        selectedAccountID = nil
+        navigationPhase = reduceMotion || detailSize == overviewSize ? .detail : .expanding
+    }
+
+    private func openAccount(_ account: ConnectedAccount) {
+        guard navigationPhase == .overview else { return }
+        if account.connectionKind == .legacyPrimary {
+            openService(account.provider)
+        } else {
+            selectedService = account.provider
+            selectedAccountID = account.id
+            navigationPhase = reduceMotion || detailSize == overviewSize ? .detail : .expanding
+        }
+    }
+
+    private var gridAuthenticatedContent: some View {
+        VStack(spacing: 0) {
+            header
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+            MacAccountGridView(width: overviewWidth, maxHeight: overviewBodyMaxHeight,
+                               openAccount: openAccount, openSettings: openSettingsWindow,
+                               leadingContent: AnyView(overviewNotices), connect: connectService)
+            updateAvailableRow
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { updateHeight = $0 }
+            footer
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
+        }
+    }
+
+    private var hasOverviewNotices: Bool {
+        !errorBanners.isEmpty || (viewModel.isCodexAuthenticated && resetAnnouncement != nil)
+            || quotaInsightHeight > 0
+    }
+
+    private var overviewNotices: some View {
+        VStack(spacing: 0) {
+            ForEach(errorBanners) { banner in
+                errorBanner(banner).padding(.bottom, 8)
+            }
+            groupedAlerts(inset: false)
+                .padding(.bottom, quotaInsightHeight > 0 ? 16 : 0)
+        }
+    }
+
+    private func groupedAlerts(inset: Bool) -> some View {
+        MacQuotaInsightRow(inset: inset,
+            announcementTitle: viewModel.isCodexAuthenticated ? resetAnnouncement?.title : nil,
+            onReadMore: { showResetDetails = true },
+            onDismissAnnouncement: {
+                #if DEMO_MODE
+                demoResetDismissed = true
+                #else
+                if let announcement = resetAnnouncement { dismissedResetID = announcement.id }
+                #endif
+            }, onHeightChange: { quotaInsightHeight = $0 })
+    }
+
+    private func connectService(_ service: ServiceType) {
+        Task {
+            switch service {
+            case .codex: await viewModel.signIn()
+            case .claude: await viewModel.signInClaude()
+            case .cursor: await viewModel.signInCursor()
+            }
+        }
+    }
+
+    private func service(at x: CGFloat) -> ServiceType? {
+        guard !visibleServices.isEmpty else { return nil }
+        let column = min(visibleServices.count - 1, max(0, Int(x / (overviewWidth / CGFloat(vi
