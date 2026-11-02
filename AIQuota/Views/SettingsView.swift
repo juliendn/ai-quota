@@ -351,3 +351,148 @@ private struct SettingsAccountDetail: View {
                 LabeledContent("Service", value: account.provider.displayName)
                 if let identity = account.workspaceID {
                     LabeledContent("Workspace ID", value: identity).textSelection(.enabled)
+                }
+                Toggle("Show in menu bar", isOn: Binding(get: {
+                    viewModel.settings.menuBarAccountIDs?.contains(account.id) == true
+                }, set: { shown in
+                    var ids = viewModel.settings.menuBarAccountIDs ?? []
+                    ids.removeAll { $0 == account.id }
+                    if shown { ids.append(account.id) }
+                    viewModel.settings.menuBarAccountIDs = ids
+                }))
+            }
+            Section("Connection") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(status.connected ? "Signed in" : "Not signed in", systemImage: status.connected ? "checkmark.circle.fill" : "person.crop.circle.badge.exclamationmark")
+                        .foregroundStyle(status.connected ? Color.green : .secondary)
+                    if let issue = status.issue {
+                        Label(issue, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                            .font(.callout)
+                    }
+                }
+                if busy { ProgressView().controlSize(.small) }
+                else if status.connected {
+                    Button("Refresh Usage") {
+                        if let session = status.session { Task { await session.refresh(userInitiated: true) } }
+                        else { viewModel.manualRefresh() }
+                    }
+                    .settingsAction()
+                    if account.provider == .codex,
+                       (account.connectionKind == .isolated ? status.session?.issue != nil : viewModel.codexError?.needsReconnect == true) {
+                        Button("Reconnect…", action: reconnect).settingsAction()
+                    }
+                    Button("Sign Out…", role: .destructive) { pendingAction = "Sign Out" }
+                        .settingsAction()
+                } else {
+                    Button("Sign In…", action: reconnect)
+                    .settingsAction()
+                }
+                if account.provider == .claude, account.connectionKind == .legacyPrimary,
+                   AppDistribution.allowsHostCredentialDiscovery {
+                    Toggle(isOn: $reuseClaudeCodeKeychain) {
+                        Text("Reuse Claude Code Keychain credentials")
+                        Text("Uses Claude Code’s saved sign-in when macOS allows access without a permission prompt.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Reuse Claude Code Keychain credentials")
+                }
+            }
+            if account.provider == .codex {
+                Section { Link("Codex Resets…", destination: CodexResetNotice.website).foregroundColor(.brand) }
+            }
+            if account.connectionKind == .isolated {
+                Section {
+                    Button("Remove Account…", role: .destructive) { pendingAction = "Remove Account" }
+                        .settingsAction()
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { name = AccountRegistry.account(id: account.id)?.displayLabel ?? account.displayLabel }
+        .onDisappear(perform: saveName)
+        .confirmationDialog("\(pendingAction ?? "Remove Account")?", isPresented: Binding(get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }), titleVisibility: .visible) {
+            Button(pendingAction ?? "Remove Account", role: .destructive) {
+                let action = pendingAction
+                pendingAction = nil
+                busy = true
+                Task {
+                    if account.connectionKind == .legacyPrimary {
+                        if account.provider == .codex { viewModel.signOut() }
+                        else { viewModel.signOutClaude() }
+                    } else if action == "Remove Account" { await viewModel.removeAccount(id: account.id) }
+                    else { await viewModel.signOutAccount(id: account.id) }
+                    back()
+                }
+            }
+        } message: {
+            Text(pendingAction == "Remove Account" ? "Removes this account’s local connection and cached usage." : "You can reconnect this account at any time.")
+        }
+    }
+    private func reconnect() {
+        busy = true
+        Task {
+            if account.connectionKind == .isolated { await viewModel.reconnectAccount(id: account.id) }
+            else if account.provider == .codex { await viewModel.signIn() }
+            else if account.provider == .claude { await viewModel.signInClaude() }
+            else { await viewModel.signInCursor() }
+            busy = false
+        }
+    }
+    private func saveName() {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !viewModel.isReadOnlyPreview, !trimmed.isEmpty,
+              trimmed != AccountRegistry.account(id: account.id)?.displayLabel else { return }
+        viewModel.renameAccount(id: account.id, to: trimmed)
+    }
+}
+
+private struct NotificationsSettingsPane: View {
+    @Environment(QuotaViewModel.self) private var viewModel
+    @State private var authorization: UNAuthorizationStatus = .notDetermined
+    private var allowed: Bool { authorization == .authorized || authorization == .provisional }
+
+    var body: some View {
+        @Bindable var vm = viewModel
+        Form {
+            Section {
+                Toggle("Enable notifications", isOn: $vm.settings.notifications.enabled)
+                    .onChange(of: vm.settings.notifications.enabled) { _, enabled in
+                        if enabled && !viewModel.isReadOnlyPreview { Task { await NotificationManager.shared.requestPermission(); await checkPermission() } }
+                    }
+                if !allowed {
+                    Button(authorization == .denied ? "Open System Settings…" : "Allow Notifications…") {
+                        if authorization == .denied {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.notifications")!)
+                        } else { Task { await NotificationManager.shared.requestPermission(); await checkPermission() } }
+                    }
+                    .settingsAction()
+                    .disabled(viewModel.isReadOnlyPreview)
+                }
+            } footer: {
+                if !allowed {
+                    Text(authorization == .denied ? "Notifications are disabled in System Settings." : "Allow notifications to receive usage alerts and reset reminders.")
+                }
+            }
+            if vm.settings.notifications.enabled {
+                if viewModel.isCodexEnrolled {
+                    Section("Codex") {
+                        Toggle("Allow Codex notifications", isOn: $vm.settings.notifications.codexEnabled)
+                        NotificationInlineControls(service: .codex, preferences: $vm.settings.notifications)
+                            .disabled(!vm.settings.notifications.codexEnabled)
+                    }
+                }
+                if viewModel.isClaudeEnrolled {
+                    Section("Claude Code") {
+                        Toggle("Allow Claude Code notifications", isOn: $vm.settings.notifications.claudeEnabled)
+                        NotificationInlineControls(service: .claude, preferences: $vm.settings.notifications)
+                            .disabled(!vm.settings.notifications.claudeEnabled)
+                    }
+                }
+                if viewModel.isCursorEnrolled {
+                    Section("Cursor") {
+                        Toggle("Allow Cursor notifications", isOn: $vm.settings.notifications.cursorEnabled)
+                        NotificationInlineControls(service: .cursor, preferences: $vm.settings.notifications)
+                            .disabled(!vm.settings.notifications.cursorEnabled)
+                    }
+                }
+                Section {} footer: {
