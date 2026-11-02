@@ -786,3 +786,101 @@ struct NotificationInlineControls: View {
     @Binding var preferences: NotificationPreferences
 
     var body: some View {
+        switch service {
+        case .codex:
+            codexControls
+        case .claude:
+            claudeControls
+        case .cursor:
+            cursorControls
+        }
+    }
+
+    @ViewBuilder
+    private var codexControls: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            usageThreshold
+            Divider()
+            notificationOptionGroup("5-hour window") {
+                notificationCheckbox("Usage alerts", isOn: $preferences.codex5hThresholdAlerts)
+                resetAlertControls(enabled: $preferences.codex5hReset, minimum: $preferences.codex5hResetMinimum)
+            }
+
+            Divider()
+            notificationOptionGroup("7-day window") {
+                notificationCheckbox("Usage alerts", isOn: $preferences.codexWeeklyThresholdAlerts)
+                resetAlertControls(enabled: $preferences.codexReset, minimum: $preferences.codexResetMinimum)
+            }
+
+            Divider()
+            notificationOptionGroup("Credits") {
+                notificationCheckbox("Top-up events", isOn: $preferences.codexTopUp)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var claudeControls: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            usageThreshold
+            Divider()
+            notificationOptionGroup("5-hour window") {
+                notificationCheckbox("Usage alerts", isOn: $preferences.claude5hThresholdAlerts)
+                resetAlertControls(enabled: $preferences.claude5hReset, minimum: $preferences.claude5hResetMinimum)
+            }
+
+            Divider()
+            notificationOptionGroup("7-day window") {
+                notificationCheckbox("Usage alerts", isOn: $preferences.claude7dThresholdAlerts)
+                resetAlertControls(enabled: $preferences.claude7dReset, minimum: $preferences.claude7dResetMinimum)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var cursorControls: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            usageThreshold
+            Divider()
+            notificationOptionGroup("Plan window") {
+                notificationCheckbox("Usage alerts", isOn: $preferences.cursorPlanThresholdAlerts)
+                resetAlertControls(enabled: $preferences.cursorPlanReset, minimum: $preferences.cursorPlanResetMinimum)
+            }
+        }
+    }
+
+    private var usageThreshold: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Usage alert threshold")
+                Spacer(minLength: 12)
+                SettingsPercentageField(label: "Usage alert threshold", value: Binding(get: {
+                    switch service {
+                    case .codex: preferences.codexUsageThreshold
+                    case .claude: preferences.claudeUsageThreshold
+                    case .cursor: preferences.cursorUsageThreshold
+                    }
+                }, set: { value in
+                    switch service {
+                    case .codex: preferences.codexUsageThreshold = value
+                    case .claude: preferences.claudeUsageThreshold = value
+                    case .cursor: preferences.cursorUsageThreshold = value
+                    }
+                }))
+                .help("One usage alert per window, at or above this threshold. Enter 5 to 100 percent.")
+            }
+            Text("Applies to usage alerts in both windows.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func resetAlertControls(enabled: Binding<Bool>, minimum: Binding<Int>) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Reset alerts")
+                Spacer(minLength: 12)
+                Picker("Reset alerts", selection: Binding<Int>(get: {
+                    !enabled.wrappedValue ? 0 : minimum.wrappedValue == 0 ? 2 : 1
+                }, set: { mode in
+                    enabled.wrappedValue = mode != 0
