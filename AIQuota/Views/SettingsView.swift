@@ -672,3 +672,117 @@ private struct SettingsDiagnostics: View {
     private func statusMessage(for category: CodexSourceAttempt.ErrorCategory) -> String {
         switch category {
         case .success:
+            "Working"
+        case .authFailed:
+            "Auth needs attention"
+        case .rateLimited:
+            "Rate limited"
+        case .serverError:
+            "Service issue"
+        case .network:
+            "Network issue"
+        case .invalidResponse:
+            "Unexpected response"
+        }
+    }
+
+    private func statusMessage(for category: ClaudeSourceAttempt.ErrorCategory) -> String {
+        switch category {
+        case .success:
+            "Working"
+        case .missingCredentials:
+            "Claude Code credentials not found"
+        case .expiredCredentials:
+            "Claude Code credentials expired"
+        case .missingScope:
+            "Claude Code permissions missing"
+        case .malformedCredentials:
+            "Claude Code credentials unreadable"
+        case .authFailed:
+            "Auth needs attention"
+        case .policyBlocked:
+            "Access blocked by policy"
+        case .rateLimited:
+            "Rate limited"
+        case .serverError:
+            "Service issue"
+        case .network:
+            "Network issue"
+        case .invalidResponse:
+            "Unexpected response"
+        }
+    }
+
+    private func relativeTime(_ date: Date) -> String {
+        Self.relativeFormatter.localizedString(for: date, relativeTo: .now)
+    }
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
+    private static let timestampFormatter = ISO8601DateFormatter()
+}
+
+struct ConnectedAccountNameSheet: View {
+    @Environment(QuotaViewModel.self) private var viewModel
+    let account: ConnectedAccount
+    let dismiss: () -> Void
+    let save: (String, Bool?) -> Void
+    @State private var showInMenuBar = false
+    private var asksMenuBarChoice: Bool { AccountRegistry.accounts().count > 2 }
+
+    @State private var name = ""
+    @FocusState private var nameFocused: Bool
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var serviceName: String { account.provider == .codex ? "Codex" : "Claude Code" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Name your \(serviceName) account")
+                .font(.headline)
+            Text("Your account is connected. Save the suggested name or choose your own. You can change it later in Settings.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("Account name", text: $name)
+                .focused($nameFocused)
+                .onSubmit(submit)
+            if asksMenuBarChoice {
+                Toggle("Show in menu bar", isOn: $showInMenuBar)
+                Text("Show this account’s usage gauge alongside your other accounts. You can change this in Settings.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Not Now", action: dismiss)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: submit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(trimmedName.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .onAppear {
+            name = account.displayLabel
+            showInMenuBar = viewModel.settings.menuBarAccountIDs?.contains(account.id) == true
+            nameFocused = true
+        }
+    }
+
+    private func submit() {
+        guard !trimmedName.isEmpty else { return }
+        save(trimmedName, asksMenuBarChoice ? showInMenuBar : nil)
+    }
+}
+
+struct NotificationInlineControls: View {
+    let service: ServiceType
+    @Binding var preferences: NotificationPreferences
+
+    var body: some View {
