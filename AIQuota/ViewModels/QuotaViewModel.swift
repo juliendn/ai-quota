@@ -1,1 +1,1 @@
-@/tmp/QuotaViewModel-content.txt
+{{file:/agent/ai-quota/AIQuota/ViewModels/QuotaViewModel.swift}}
