@@ -481,4 +481,127 @@ final class QuotaViewModel {
 
     /// Set to true after the window has been opened once per session,
     /// so clicking the menu bar icon repeatedly doesn't re-open it.
-    private(set) var
+    private(set) var onboardingTriggeredThisSession = false
+
+    private var hasCompletedOnboarding: Bool {
+        UserDefaults.standard.bool(forKey: "onboarding.v1.hasCompleted")
+    }
+
+    func markOnboardingTriggered() {
+        onboardingTriggeredThisSession = true
+    }
+
+    func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: "onboarding.v1.hasCompleted")
+        onboardingTriggeredThisSession = true
+        trackAnalytics(
+            "onboarding_completed",
+            extraParams: [
+                "completed_from": "guided_setup",
+                "has_connected_service": boolString(!enrolledServices.isEmpty)
+            ]
+        )
+    }
+
+    /// "codex", "claude", "both", or "none" — used as an analytics param.
+    var analyticsServicesParam: String {
+        switch enrolledServices.count {
+        case 0:  return "none"
+        case 1:  return enrolledServices.first!.rawValue
+        default: return "both"
+        }
+    }
+
+    var analyticsContextParams: [String: String] {
+        [
+            "services": analyticsServicesParam,
+            "service_count": String(enrolledServices.count),
+            "active_service": activeService.rawValue,
+            "menu_bar_service": settings.menuBarService.rawValue,
+            "menu_bar_display": settings.menuBarDisplayMode.rawValue,
+            "notifications_enabled": boolString(settings.notifications.enabled),
+            "onboarding_completed": boolString(hasCompletedOnboarding)
+        ]
+    }
+
+    func recordDailyActiveIfNeeded() {
+        let today = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
+        let key = "analytics.lastActiveDate"
+        guard UserDefaults.standard.string(forKey: key) != today else { return }
+        UserDefaults.standard.set(today, forKey: key)
+        trackAnalytics("app_active", extraParams: ["surface": "popover"])
+    }
+
+    func resetOnboardingForReplay() {
+        // Called from Settings "Guided Setup…" button — lets the user re-run
+        // the wizard without wiping any auth or settings state.
+        onboardingTriggeredThisSession = false
+    }
+
+    /// Full reset: signs out all services, clears cached data, resets settings
+    /// and onboarding state — the app behaves exactly like a fresh install.
+    func resetToNewUser() async {
+        clearTokenHistory()
+        clearUsageHistory()
+        clearClaudeEnterpriseDetails()
+        // Step 1: stop refresh and await quiescence.
+        // Capture the task reference *before* stopAutoRefresh() sets refreshTask = nil,
+        // otherwise the await below is always a no-op.
+        let inFlight = refreshTask
+        stopAutoRefresh()
+        await inFlight?.value  // actually suspends until the in-flight refresh completes
+
+        for account in additionalAccounts {
+            await account.signOut()
+        }
+        additionalAccounts.removeAll()
+        for account in AccountRegistry.accounts() {
+            AccountRegistry.remove(id: account.id)
+        }
+
+        // Step 2: auth reset
+        let result = await resetCoordinator.reset()
+        await NotificationManager.shared.clearResetHistory(for: .codex)
+        await NotificationManager.shared.clearResetHistory(for: .claude)
+        if !result.warnings.isEmpty {
+            logger.warning("[Reset] warnings: \(result.warnings.joined(separator: "; "))")
+        }
+
+        // Step 3: product state reset (only after auth reset completes)
+        await QuotaInsightStore.shared.clear()
+        claudeUsage     = nil
+        codexUsage      = nil
+        codexAutoReload = nil
+        SharedDefaults.clearUsage()
+        if let account = primaryAccount(for: .codex) {
+            SharedDefaults.clearUsage(forAccountID: account.id)
+        }
+        SharedDefaults.clearClaudeUsage()
+        if let account = primaryAccount(for: .claude) {
+            SharedDefaults.clearClaudeUsage(forAccountID: account.id)
+        }
+        SharedDefaults.clearCodexSourceAttempts()
+        SharedDefaults.clearClaudeSourceAttempts()
+        settings = .default
+        UserDefaults.standard.removeObject(forKey: ClaudeOAuthKeychainReader.consentDefaultsKey)
+        // Persist settings directly — calling saveSettings() would invoke startAutoRefresh(),
+        // which must not fire while the auth coordinators are still in the resetting state.
+        SharedDefaults.saveSettings(settings)
+        enrolledServices = []
+        SharedDefaults.clearEnrolledServices()
+        UserDefaults.standard.removeObject(forKey: "onboarding.v1.hasCompleted")
+        onboardingTriggeredThisSession = false
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // MARK: - Backward-compatible aliases (used by MenuBarIconView / AIQuotaApp)
+
+    var usage: CodexUsage? { codexUsage }
+    var isLoading: Bool {
+        isCodexLoading || isClaudeLoading || additionalAccounts.contains(where: { $0.isLoading })
+    }
+    var error: NetworkError? {
+        get { codexError }
+        set { codexError = newValue }
+    }
+    var isAuthenticate
