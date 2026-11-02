@@ -526,6 +526,8 @@ private struct ClaudeEnterpriseSpendView: View {
         .modifier(AnalyticsCard())
     }
 
+    /// Static placeholders reserve chart and row space without suggesting a
+    /// reported zero or adding motion while the provider request is pending.
     private var spendSkeleton: some View {
         VStack(alignment: .leading, spacing: 14) {
             DetailSkeletonBar(width: 116, height: 34)
