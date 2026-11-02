@@ -365,4 +365,69 @@ final class QuotaViewModel {
         if provider == .codex {
             guard account.workspaceID == nil,
                   !AccountRegistry.accounts(for: provider).contains(where: {
-            
+                      $0.id != account.id && $0.workspaceID == identity
+                  }) else { return }
+        }
+        account.workspaceID = identity
+        account.updatedAt = .now
+        AccountRegistry.save(account)
+    }
+
+    func reconnectAccount(id: String) async {
+        guard let session = additionalAccounts.first(where: { $0.id == id }) else { return }
+        await session.signIn()
+        if session.isAuthenticated { startAutoRefresh(immediateRefresh: false) }
+    }
+
+    func signOutAccount(id: String) async {
+        guard let session = additionalAccounts.first(where: { $0.id == id }) else { return }
+        await session.signOut()
+        if !isCodexAuthenticated && !isClaudeAuthenticated &&
+            !additionalAccounts.contains(where: { $0.isAuthenticated }) {
+            stopAutoRefresh()
+        }
+    }
+
+    func removeAccount(id: String) async {
+        guard let session = additionalAccounts.first(where: { $0.id == id }) else { return }
+        await session.signOut()
+        AccountRegistry.remove(id: id)
+        await QuotaInsightStore.shared.remove(accountID: id)
+        additionalAccounts.removeAll { $0.id == id }
+        if var selected = settings.menuBarAccountIDs, selected.contains(id) {
+            selected.removeAll { $0 == id }
+            settings.menuBarAccountIDs = selected
+            saveSettings()
+        }
+        if !isCodexAuthenticated && !isClaudeAuthenticated &&
+            !additionalAccounts.contains(where: { $0.isAuthenticated }) {
+            stopAutoRefresh()
+        }
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    func renameAccount(id: String, to rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, var account = AccountRegistry.account(id: id) else { return }
+        account.displayLabel = name
+        account.updatedAt = .now
+        AccountRegistry.save(account)
+        additionalAccounts.first { $0.id == id }?.updateAccount(account)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    let claudeCoordinator: ClaudeAuthCoordinator
+    private let claudeClient: ClaudeClient
+
+    // MARK: - Cursor
+
+    var cursorUsage: CursorUsage?
+    var isCursorLoading = false
+    var cursorError: NetworkError?
+    let cursorCoordinator: CursorAuthCoordinator
+    private let cursorClient: CursorClient
+    private var cursorRefreshGeneration = 0
+
+    // MARK: - Auth state (derived from coordinator streams)
+
+    var claudeState: AuthStat
