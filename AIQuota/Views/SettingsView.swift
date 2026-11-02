@@ -445,3 +445,101 @@ private struct SettingsAccountDetail: View {
         viewModel.renameAccount(id: account.id, to: trimmed)
     }
 }
+
+private struct NotificationsSettingsPane: View {
+    @Environment(QuotaViewModel.self) private var viewModel
+    @State private var authorization: UNAuthorizationStatus = .notDetermined
+    private var allowed: Bool { authorization == .authorized || authorization == .provisional }
+
+    var body: some View {
+        @Bindable var vm = viewModel
+        Form {
+            Section {
+                Toggle("Enable notifications", isOn: $vm.settings.notifications.enabled)
+                    .onChange(of: vm.settings.notifications.enabled) { _, enabled in
+                        if enabled && !viewModel.isReadOnlyPreview { Task { await NotificationManager.shared.requestPermission(); await checkPermission() } }
+                    }
+                if !allowed {
+                    Button(authorization == .denied ? "Open System Settings…" : "Allow Notifications…") {
+                        if authorization == .denied {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.notifications")!)
+                        } else { Task { await NotificationManager.shared.requestPermission(); await checkPermission() } }
+                    }
+                    .settingsAction()
+                    .disabled(viewModel.isReadOnlyPreview)
+                }
+            } footer: {
+                if !allowed {
+                    Text(authorization == .denied ? "Notifications are disabled in System Settings." : "Allow notifications to receive usage alerts and reset reminders.")
+                }
+            }
+            if vm.settings.notifications.enabled {
+                if viewModel.isCodexEnrolled {
+                    Section("Codex") {
+                        Toggle("Allow Codex notifications", isOn: $vm.settings.notifications.codexEnabled)
+                        NotificationInlineControls(service: .codex, preferences: $vm.settings.notifications)
+                            .disabled(!vm.settings.notifications.codexEnabled)
+                    }
+                }
+                if viewModel.isClaudeEnrolled {
+                    Section("Claude Code") {
+                        Toggle("Allow Claude Code notifications", isOn: $vm.settings.notifications.claudeEnabled)
+                        NotificationInlineControls(service: .claude, preferences: $vm.settings.notifications)
+                            .disabled(!vm.settings.notifications.claudeEnabled)
+                    }
+                }
+                if viewModel.isCursorEnrolled {
+                    Section("Cursor") {
+                        Toggle("Allow Cursor notifications", isOn: $vm.settings.notifications.cursorEnabled)
+                        NotificationInlineControls(service: .cursor, preferences: $vm.settings.notifications)
+                            .disabled(!vm.settings.notifications.cursorEnabled)
+                    }
+                }
+                Section {} footer: {
+                    Text("One usage alert per window when usage reaches your threshold. Reset reminders are separate. On Mac, alerts follow the original connection for each service.")
+                }
+                if viewModel.enrolledServices.isEmpty {
+                    ContentUnavailableView("Connect an account", systemImage: "bell",
+                                           description: Text("Notification options appear after you connect a service."))
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .task { await checkPermission() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await checkPermission() }
+        }
+    }
+    private func checkPermission() async { authorization = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus }
+}
+
+struct AboutSettingsPane: View {
+    private var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—" }
+    private var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—" }
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                Image("AppBrandIcon").resizable().scaledToFit().frame(width: 96, height: 96)
+                    .shadow(color: Color.brand.opacity(0.2), radius: 25)
+                    .accessibilityHidden(true)
+                Text("AIQuota").font(.system(size: 32, weight: .bold)).padding(.top, 20)
+                Text("Know your limits.\nKeep your flow.")
+                    .font(.title3).foregroundStyle(.secondary).padding(.top, 10)
+                Text("Version \(version) (\(build))").font(.callout).foregroundStyle(.secondary)
+                    .textSelection(.enabled).padding(.top, 24)
+                Text("Made by John Niedermeyer, with a little help from Claude, Codex, and friends.")
+                    .font(.callout).foregroundStyle(.secondary).frame(maxWidth: 330).padding(.top, 24)
+                VStack(spacing: 12) {
+                    Link("Website", destination: URL(string: "https://aiquota.app")!)
+                    Link("Report an Issue", destination: URL(string: "https://github.com/niederme/ai-quota/issues")!)
+                    Link("@niederme on X", destination: URL(string: "https://x.com/niederme")!)
+                }
+                .foregroundColor(.brand).padding(.top, 24)
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 24).padding(.vertical, 44)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
