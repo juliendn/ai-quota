@@ -18,4 +18,13 @@ public enum MacAccountOverviewUsage {
         guard account.provider == .claude else { return nil }
         return account.connectionKind == .legacyPrimary ? primary : isolated
     }
+
+    public static func cursor(
+        account: ConnectedAccount,
+        isolated: CursorUsage?,
+        primary: CursorUsage?
+    ) -> CursorUsage? {
+        guard account.provider == .cursor else { return nil }
+        return account.connectionKind == .legacyPrimary ? primary : isolated
+    }
 }
