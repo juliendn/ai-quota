@@ -53,11 +53,13 @@ struct WidgetAccountQuery: EntityQuery {
 enum ServiceOption: String, AppEnum {
     case codex
     case claude
+    case cursor
 
     nonisolated(unsafe) static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Service")
     nonisolated(unsafe) static var caseDisplayRepresentations: [ServiceOption: DisplayRepresentation] = [
         .codex:  .init(title: "Codex"),
         .claude: .init(title: "Claude Code"),
+        .cursor: .init(title: "Cursor"),
     ]
 }
 
