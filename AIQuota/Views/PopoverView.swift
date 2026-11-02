@@ -548,4 +548,244 @@ struct PopoverView: View {
                 CircularGaugeView(
                     primaryPercent: 0, primaryLimitReached: false,
                     showsPrimaryMetric: true,
-           
+                    secondaryPercent: 0, secondaryLimitReached: false,
+                    showsSecondaryMetric: true,
+                    isLoading: true, icon: "logo-claude",
+                    label: "Claude Code", primaryLabel: "5h", secondaryLabel: "7d",
+                    resetAt: nil, weeklyResetAt: nil, isRefreshing: true, onRefresh: {}
+                )
+            }
+        } else if viewModel.isClaudeRecovering {
+            loadingGauge(icon: "logo-claude", label: "Claude Code")
+        } else {
+            connectGauge(icon: "logo-claude", label: "Claude Code") {
+                Task { await viewModel.signInClaude() }
+            }
+        }
+    }
+
+    private var codexColumn: some View {
+        VStack(spacing: 0) {
+            codexGaugeSlot
+            if viewModel.isCodexAuthenticated,
+               let history = viewModel.codexTokenHistory,
+               history.isAttributed(toWorkspaceID: viewModel.primaryAccount(for: .codex)?.workspaceID),
+               CodexTokenHistoryView.hasVisibleData(history) {
+                CodexTokenHistoryView(history: history, availableWidth: max(1, overviewWidth / CGFloat(visibleServices.count) - 28))
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .task(id: viewModel.isCodexAuthenticated) {
+            if viewModel.isCodexAuthenticated { viewModel.refreshTokenHistory() }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Codex service")
+        .accessibilityIdentifier("codexServiceColumn")
+    }
+
+    @ViewBuilder
+    private var gaugeRow: some View {
+        if viewModel.isCodexEnrolled && viewModel.isClaudeEnrolled {
+            HStack(alignment: .top, spacing: 0) {
+                serviceTarget(.codex) { codexColumn }.frame(maxWidth: .infinity)
+                Divider()
+                serviceTarget(.claude) { claudeGaugeSlot }.frame(maxWidth: .infinity)
+            }
+        } else if viewModel.isCodexEnrolled {
+            serviceTarget(.codex) { codexColumn }
+        } else {
+            serviceTarget(.claude) { claudeGaugeSlot }
+        }
+    }
+
+    @ViewBuilder
+    private var statsRow: some View {
+        let bothEnrolled = viewModel.isCodexEnrolled && viewModel.isClaudeEnrolled
+        let hasCodexStats = viewModel.isCodexEnrolled && viewModel.codexUsage != nil
+        let hasClaudeStats = viewModel.isClaudeEnrolled && viewModel.claudeUsage != nil
+
+        if hasCodexStats || hasClaudeStats {
+            Divider()
+            if bothEnrolled {
+                HStack(alignment: .top, spacing: 0) {
+                    codexSecondaryStats.padding(.horizontal, 14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Divider()
+                    claudeSecondaryStats.padding(.horizontal, 14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(.vertical, 7)
+            } else if hasCodexStats {
+                codexSecondaryStats.padding(.horizontal, 14).padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                claudeSecondaryStats.padding(.horizontal, 14).padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func codexAccessibilitySummary(_ u: CodexUsage) -> String {
+        var lines: [String]
+        if u.reportedWindowShape == .dual {
+            lines = [
+                "\(formatWindowDuration(u.hourlyWindowSeconds)) window: \(u.hourlyUsedPercent)% used",
+                "7-day window: \(u.weeklyUsedPercent)% used",
+            ]
+        } else if u.reportedWindowShape == .weeklyOnly {
+            lines = [
+                "5h window: not currently reported",
+                "7-day window: \(u.weeklyUsedPercent)% used",
+            ]
+        } else { lines = ["Usage unavailable"] }
+        if let balance = u.creditBalance { lines.append("Credit balance: \(formatCodexDollarAmount(balance))") }
+        if let spent = u.bonusCreditsSpentThisMonth, spent > 0 {
+            lines.append("Credits used: \(formatCodexDollarAmount(spent))")
+        }
+        if let local = u.approxLocalMessages, local.count == 2 {
+            lines.append("Local messages: ~\(local[0]) / \(local[1])")
+        }
+        if let cloud = u.approxCloudMessages, cloud.count == 2 {
+            lines.append("Cloud messages: ~\(cloud[0]) / \(cloud[1])")
+        }
+        lines.append("Plan: \(u.displayPlan)")
+        return lines.joined(separator: "\n")
+    }
+
+    private var unavailableCodexUsage: some View {
+        VStack(spacing: 8) {
+            Text("Codex").font(.headline.bold())
+            Text("Usage unavailable")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Refresh") { viewModel.manualRefresh() }
+                .controlSize(.small)
+        }
+        .frame(width: 114, height: 114)
+    }
+
+    private func budgetValue(_ amount: Double, unit: String?) -> String {
+        let digits = amount == amount.rounded() ? 0 : 2
+        if let unit, unit.count == 3, unit.lowercased() != "credit" {
+            return amount.formatted(.currency(code: unit.uppercased()).precision(.fractionLength(digits)))
+        }
+        return amount.formatted(.number.precision(.fractionLength(digits)))
+    }
+
+    private func claudeAccessibilitySummary(_ u: ClaudeUsage) -> String {
+        var lines = [
+            "\(u.primaryMetricLabel) usage: \(u.primaryMetric.utilization.map { "\(Int($0.rounded()))% used" } ?? "unknown")",
+        ]
+        if u.primaryMetric.kind != .sevenDay, let sevenDay = u.sevenDayUtilization {
+            lines.append("7-day window: \(Int(sevenDay.rounded()))% used")
+        }
+        if let bonus = u.bonusUsage {
+            lines.append("Spent this month: \(formatBonusSpend(bonus))")
+        }
+        if let extra = u.extraUsage, extra.isEnabled {
+            lines.append("Monthly limit: \(Int(extra.usedCredits)) / \(extra.monthlyLimit)")
+        }
+        if let spend = u.spendLimit {
+            lines.append("Spend limit: \(Int(spend.used)) / \(Int(spend.limit))")
+        }
+        lines.append("Plan: \(u.planDisplayName)")
+        return lines.joined(separator: "\n")
+    }
+
+    private func connectGauge(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        VStack(spacing: 4) {
+            ZStack {
+                Circle()
+                    .trim(from: 0, to: 0.75)
+                    .stroke(.fill.tertiary, style: StrokeStyle(lineWidth: 8, lineCap: .butt))
+                    .rotationEffect(.degrees(135))
+                Circle()
+                    .trim(from: 0, to: 0.75)
+                    .stroke(.fill.tertiary, style: StrokeStyle(lineWidth: 8, lineCap: .butt))
+                    .rotationEffect(.degrees(135))
+                    .padding(8)
+                VStack(spacing: 2) {
+                    Image(icon)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 15, height: 15)
+                        .foregroundStyle(CircularGaugeView.accent.opacity(0.35))
+                    Text("—")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(.quaternary)
+                }
+                VStack {
+                    Spacer()
+                    Button("Connect", action: action)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .padding(.bottom, 2)
+                }
+            }
+            .frame(width: 114, height: 114)
+
+            VStack(spacing: 2) {
+                Text(label)
+                    .font(.headline.bold())
+                Text("Not connected")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .multilineTextAlignment(.center)
+    }
+
+    // MARK: - Secondary stats
+
+    @ViewBuilder
+    private var codexSecondaryStats: some View {
+        if let usage = viewModel.codexUsage {
+            let autoReload = viewModel.codexAutoReload
+            VStack(alignment: .leading, spacing: 5) {
+                compactRow("Plan", usage.displayPlan)
+                if let balance = usage.creditBalance {
+                    CodexCreditsRow(balance: balance, autoReload: autoReload)
+                }
+                if let spent = usage.bonusCreditsSpentThisMonth, spent > 0 {
+                    compactRow(
+                        "Credits used",
+                        formatCodexDollarAmount(spent),
+                        labelTint: .warningAmber,
+                        valueTint: .warningAmber,
+                        infoTitle: "Estimated Monthly Spend",
+                        infoHelp: codexSpentHelpText,
+                        stacked: true
+                    )
+                }
+            }
+        }
+    }
+
+    private func loadingGauge(icon: String, label: String) -> some View {
+        CircularGaugeView(
+            primaryPercent: 0,
+            primaryLimitReached: false,
+            showsPrimaryMetric: true,
+            secondaryPercent: 0,
+            secondaryLimitReached: false,
+            showsSecondaryMetric: true,
+            isLoading: true,
+            icon: icon,
+            label: label,
+            primaryLabel: "5h",
+            secondaryLabel: "7d",
+            resetAt: nil,
+            weeklyResetAt: nil,
+            isRefreshing: true,
+            onRefresh: {}
+        )
+    }
+
+    @ViewBuilder
+    private var claudeSecondaryStats: some View {
+        if let usage = viewModel.claudeUsage {
+            VStack(alignment: .leading, spacing: 6) {
+                compactRow("Plan", usage.planDisplayName)
+                if let credits = usage.usageCredits, credits.spent > 0 {
+                    let tint: Col
