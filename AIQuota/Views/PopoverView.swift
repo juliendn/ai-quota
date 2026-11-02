@@ -212,4 +212,125 @@ struct PopoverView: View {
     private var popoverSurface: some View {
         ZStack {
             if #available(macOS 26.0, *) {
-   
+                // A partial blur over the menu-bar window's glass. At full
+                // strength any SwiftUI material here made the sheet read as opaque;
+                // with none, shapes and text behind stayed too sharp.
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .opacity(0.7)
+            } else {
+                // Sequoia's MenuBarExtra material is substantially more transparent
+                // than Tahoe's glass treatment. Stabilize contrast while retaining a
+                // small amount of desktop color.
+                Rectangle()
+                    .fill(.regularMaterial)
+                    .overlay {
+                        Color(nsColor: .windowBackgroundColor).opacity(0.92)
+                    }
+            }
+            sheetTint
+        }
+    }
+
+    // Plum glass over the window's own glass: a 53% tint (66% in light) lets the
+    // desktop through; captions are near-white / deep plum to stay legible.
+    private var sheetTint: some View {
+        ZStack {
+            Color.sheetTint
+            EllipticalGradient(colors: [.sheetGlow, .clear], center: .topLeading,
+                               startRadiusFraction: 0, endRadiusFraction: 0.75)
+            EllipticalGradient(colors: [.sheetGlowTrailing, .clear], center: .bottomTrailing,
+                               startRadiusFraction: 0, endRadiusFraction: 0.6)
+        }
+        .overlay { sheetRim }
+        .allowsHitTesting(false)
+    }
+
+    // Specular edge, brightest at the top-leading corner, for the Liquid Glass read.
+    @ViewBuilder
+    private var sheetRim: some View {
+        if #available(macOS 26.0, *) {
+            ContainerRelativeShape()
+                .strokeBorder(
+                    LinearGradient(stops: [
+                        .init(color: .sheetRim, location: 0),
+                        .init(color: .sheetRim.opacity(0.15), location: 0.35),
+                        .init(color: .clear, location: 0.6),
+                        .init(color: .sheetRim.opacity(0.35), location: 1),
+                    ], startPoint: .topLeading, endPoint: .bottomTrailing),
+                    lineWidth: 1
+                )
+        }
+    }
+
+    private func openSettingsWindow() {
+        menuBarWindow?.orderOut(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        openSettings()
+    }
+
+    // MARK: - Authenticated layout
+
+    private var visibleServices: [ServiceType] {
+        ServiceType.allCases.filter { viewModel.enrolledServices.contains($0) }
+    }
+
+    private func canOpen(_ service: ServiceType) -> Bool {
+        switch service {
+        case .codex: viewModel.isCodexAuthenticated || viewModel.codexUsage != nil
+        case .claude: viewModel.isClaudeAuthenticated || viewModel.claudeUsage != nil
+        case .cursor: viewModel.isCursorAuthenticated || viewModel.cursorUsage != nil
+        }
+    }
+
+    private func openService(_ service: ServiceType) {
+        guard canOpen(service), navigationPhase == .overview else { return }
+        hoveredService = nil
+        focusedService = nil
+        selectedService = service
+        selectedAccountID = nil
+        navigationPhase = reduceMotion || detailSize == overviewSize ? .detail : .expanding
+    }
+
+    private func openAccount(_ account: ConnectedAccount) {
+        guard navigationPhase == .overview else { return }
+        if account.connectionKind == .legacyPrimary {
+            openService(account.provider)
+        } else {
+            selectedService = account.provider
+            selectedAccountID = account.id
+            navigationPhase = reduceMotion || detailSize == overviewSize ? .detail : .expanding
+        }
+    }
+
+    private var gridAuthenticatedContent: some View {
+        VStack(spacing: 0) {
+            header
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+            MacAccountGridView(width: overviewWidth, maxHeight: overviewBodyMaxHeight,
+                               openAccount: openAccount, openSettings: openSettingsWindow,
+                               leadingContent: AnyView(overviewNotices), connect: connectService)
+            updateAvailableRow
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { updateHeight = $0 }
+            footer
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
+        }
+    }
+
+    private var hasOverviewNotices: Bool {
+        !errorBanners.isEmpty || (viewModel.isCodexAuthenticated && resetAnnouncement != nil)
+            || quotaInsightHeight > 0
+    }
+
+    private var overviewNotices: some View {
+        VStack(spacing: 0) {
+            ForEach(errorBanners) { banner in
+                errorBanner(banner).padding(.bottom, 8)
+            }
+            groupedAlerts(inset: false)
+                .padding(.bottom, quotaInsightHeight > 0 ? 16 : 0)
+        }
+    }
+
+    private func groupedAlerts(inset: Bool) -> some View {
+        MacQuo
