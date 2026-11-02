@@ -376,3 +376,102 @@ struct MacAccountRowButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let highlighted: Bool
 
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background { MacAccountRowSurface(highlighted: highlighted, pressed: configuration.isPressed) }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: highlighted)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Keep the empty sheet in the same layout as connected services. The Connect
+/// control is native; the rest of the row offers the same connection action.
+struct MacAccountPlaceholderRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @GestureState private var pressed = false
+    let service: ServiceType
+    let availableWidth: CGFloat
+    let highlighted: Bool
+    let connect: () -> Void
+
+    private var name: String { service.displayName }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 20) {
+                MacAccountDial(icon: service == .codex ? "logo-openai" : service == .claude ? "logo-claude" : "logo-cursor",
+                               primaryPercent: nil, primaryLabel: "5h", secondaryPercent: nil,
+                               loading: false, connected: false, hasIssue: false)
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(name)
+                            .font(.system(size: 20, weight: .semibold)).tracking(-0.25)
+                        Text("Not connected")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.overviewPrimary)
+                    placeholderBar(width: 136)
+                    placeholderBar(width: 172)
+                    Button("Connect", action: connect)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .tint(Color.overviewAccent)
+                        .padding(.top, 4)
+                        .accessibilityLabel("Connect \(name)")
+                }
+                .padding(.top, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if service == .codex {
+                CodexEmptyTokenHistoryView(availableWidth: availableWidth + 2 * MacAccountDial.strokeOutset)
+                    .padding(.horizontal, -MacAccountDial.strokeOutset)
+                    .opacity(0.6)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 21)
+        .padding(.bottom, service == .codex ? 8 : 21)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: 24))
+        .background { MacAccountRowSurface(highlighted: highlighted, pressed: pressed) }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: highlighted)
+        .onTapGesture(perform: connect)
+        .simultaneousGesture(DragGesture(minimumDistance: 0).updating($pressed) { _, state, _ in state = true })
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(keys: [.return, .space]) { _ in connect(); return .handled }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(name), not connected")
+        .accessibilityAction(named: "Connect", connect)
+    }
+
+    private func placeholderBar(width: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 4)
+            .fill(Color.overviewTrack)
+            .frame(maxWidth: width)
+            .frame(height: 8)
+            .frame(height: 16)
+            .accessibilityHidden(true)
+    }
+}
+
+struct MacFooterButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovered = false
+    @FocusState private var focused: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.overviewPrimary)
+            .padding(.horizontal, 10)
+            .frame(minHeight: 32)
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .background((configuration.isPressed ? Color.overviewGlassHighlight : Color.overviewGlass)
+                            .opacity(hovered || focused || configuration.isPressed ? 1 : 0),
+                        in: RoundedRectangle(cornerRadius: 8))
+            .focused($focused)
+            .focusEffectDisabled()
+            .onHover { hovered = $0 }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
+    }
+}
