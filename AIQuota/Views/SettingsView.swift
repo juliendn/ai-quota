@@ -496,3 +496,77 @@ private struct NotificationsSettingsPane: View {
                     }
                 }
                 Section {} footer: {
+                    Text("One usage alert per window when usage reaches your threshold. Reset reminders are separate. On Mac, alerts follow the original connection for each service.")
+                }
+                if viewModel.enrolledServices.isEmpty {
+                    ContentUnavailableView("Connect an account", systemImage: "bell",
+                                           description: Text("Notification options appear after you connect a service."))
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .task { await checkPermission() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await checkPermission() }
+        }
+    }
+    private func checkPermission() async { authorization = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus }
+}
+
+struct AboutSettingsPane: View {
+    private var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—" }
+    private var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—" }
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                Image("AppBrandIcon").resizable().scaledToFit().frame(width: 96, height: 96)
+                    .shadow(color: Color.brand.opacity(0.2), radius: 25)
+                    .accessibilityHidden(true)
+                Text("AIQuota").font(.system(size: 32, weight: .bold)).padding(.top, 20)
+                Text("Know your limits.\nKeep your flow.")
+                    .font(.title3).foregroundStyle(.secondary).padding(.top, 10)
+                Text("Version \(version) (\(build))").font(.callout).foregroundStyle(.secondary)
+                    .textSelection(.enabled).padding(.top, 24)
+                Text("Made by John Niedermeyer, with a little help from Claude, Codex, and friends.")
+                    .font(.callout).foregroundStyle(.secondary).frame(maxWidth: 330).padding(.top, 24)
+                VStack(spacing: 12) {
+                    Link("Website", destination: URL(string: "https://aiquota.app")!)
+                    Link("Report an Issue", destination: URL(string: "https://github.com/niederme/ai-quota/issues")!)
+                    Link("@niederme on X", destination: URL(string: "https://x.com/niederme")!)
+                }
+                .foregroundColor(.brand).padding(.top, 24)
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 24).padding(.vertical, 44)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct SettingsDiagnostics: View {
+    @State private var codexAttempts: [CodexSourceAttempt] = []
+    @State private var claudeAttempts: [ClaudeSourceAttempt] = []
+    @State private var copied = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Connection diagnostics include authentication sources, HTTP status, error categories, and timestamps. No credentials or response bodies.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button(copied ? "Copied" : "Copy Diagnostics") { copyDiagnostics(); copied = true }
+                Button("Refresh Status") { reload(); copied = false }
+            }
+            .settingsAction()
+            Text("Codex: \(statusDetail(isAuthenticated: true, attempt: codexAttempts.last))")
+            Text("Claude Code: \(statusDetail(isAuthenticated: true, attempt: claudeAttempts.last))")
+        }
+        .font(.callout)
+        .padding(.vertical, 8)
+        .task { reload() }
+    }
+    private func reload() {
+        codexAttempts = SharedDefaults.loadCodexSourceAttempts()
+        claudeAttempts = SharedDefaults.loadClaudeSourceAttempts()
+    }
+
+    private func statusDetail(isAuthenticated: Bool, attempt: CodexSourceAttempt?) -> String {
