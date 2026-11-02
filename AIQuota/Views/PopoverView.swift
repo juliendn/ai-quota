@@ -333,4 +333,219 @@ struct PopoverView: View {
     }
 
     private func groupedAlerts(inset: Bool) -> some View {
-        MacQuo
+        MacQuotaInsightRow(inset: inset,
+            announcementTitle: viewModel.isCodexAuthenticated ? resetAnnouncement?.title : nil,
+            onReadMore: { showResetDetails = true },
+            onDismissAnnouncement: {
+                #if DEMO_MODE
+                demoResetDismissed = true
+                #else
+                if let announcement = resetAnnouncement { dismissedResetID = announcement.id }
+                #endif
+            }, onHeightChange: { quotaInsightHeight = $0 })
+    }
+
+    private func connectService(_ service: ServiceType) {
+        Task {
+            switch service {
+            case .codex: await viewModel.signIn()
+            case .claude: await viewModel.signInClaude()
+            case .cursor: await viewModel.signInCursor()
+            }
+        }
+    }
+
+    private func service(at x: CGFloat) -> ServiceType? {
+        guard !visibleServices.isEmpty else { return nil }
+        let column = min(visibleServices.count - 1, max(0, Int(x / (overviewWidth / CGFloat(visibleServices.count)))))
+        return visibleServices[column]
+    }
+
+    // One tracking region spans both rows, including their padding and divider.
+    // Child controls such as Refresh and Connect keep their own button actions.
+    private var serviceArea: some View {
+        VStack(spacing: 0) {
+            gaugeRow.padding(.top, 16).padding(.bottom, 10)
+            statsRow
+        }
+        .contentShape(Rectangle())
+        .background {
+            HStack(spacing: 0) {
+                ForEach(visibleServices, id: \.self) { service in
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(.quaternary)
+                        .foregroundStyle(.primary)
+                        .opacity(hoveredService == service || focusedService == service ? 1 : 0)
+                        .frame(maxWidth: .infinity)
+                        .padding(5)
+                }
+            }.allowsHitTesting(false)
+        }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                hoveredService = service(at: location.x).flatMap { canOpen($0) ? $0 : nil }
+            case .ended:
+                hoveredService = nil
+            }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hoveredService)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: focusedService)
+        .onTapGesture(coordinateSpace: .local) { location in
+            if let service = service(at: location.x) { openService(service) }
+        }
+    }
+
+    private func serviceTarget<Content: View>(_ service: ServiceType, @ViewBuilder content: () -> Content) -> some View {
+        let name = service.displayName
+        return ServiceFocusRegion(enabled: canOpen(service) && navigationPhase == .overview,
+                                  content: content()) { focused in
+            if focused {
+                focusedService = service
+            } else if focusedService == service {
+                focusedService = nil
+            }
+        }
+            .onKeyPress(keys: [.return, .space]) { _ in
+                guard canOpen(service) else { return .ignored }
+                openService(service)
+                return .handled
+            }
+            .accessibilityAction(named: Text("View \(name) details")) { openService(service) }
+            .accessibilityHint(canOpen(service) ? "Opens \(name) analytics and statistics" : "")
+    }
+
+    @ViewBuilder
+    private var authenticatedContent: some View {
+        VStack(spacing: 0) {
+            header
+
+            ForEach(errorBanners) { banner in
+                errorBanner(banner)
+                Divider()
+            }
+
+            groupedAlerts(inset: true)
+
+            serviceArea
+
+            updateAvailableRow
+            footer
+        }
+    }
+
+    // MARK: - Gauge slots
+
+    @ViewBuilder
+    private var codexGaugeSlot: some View {
+        if viewModel.isCodexAuthenticated {
+            if let u = viewModel.codexUsage {
+                if u.reportedWindowShape == nil,
+                   let budget = u.monthlyBudget,
+                   let used = budget.used, let limit = budget.limit,
+                   used.isFinite, used >= 0, limit.isFinite, limit > 0 {
+                    BudgetGaugeView(
+                        used: used, limit: limit,
+                        usedText: budgetValue(used, unit: budget.unit),
+                        limitText: budgetValue(limit, unit: budget.unit),
+                        unitLabel: budget.unit?.lowercased() == "credit" ? "credits this month"
+                            : (budget.unit?.lowercased() == "usd" ? "monthly spend" : "monthly allowance"),
+                        icon: "logo-openai", label: "Codex", resetAt: budget.resetAt,
+                        readingAt: u.fetchedAt,
+                        isRefreshing: viewModel.isCodexLoading,
+                        onRefresh: { viewModel.manualRefresh() }
+                    )
+                } else if u.reportedWindowShape != nil {
+                    let hasHourlyWindow = u.reportedWindowShape == .dual
+                    CircularGaugeView(
+                        primaryPercent: hasHourlyWindow ? u.hourlyUsedPercent : u.weeklyUsedPercent,
+                        primaryLimitReached: hasHourlyWindow ? u.hourlyUsedPercent >= 100 : u.isWeeklyExhausted,
+                        showsPrimaryMetric: true,
+                        secondaryPercent: u.weeklyUsedPercent,
+                        secondaryLimitReached: u.isWeeklyExhausted,
+                        showsSecondaryMetric: hasHourlyWindow,
+                        isLoading: false,
+                        icon: "logo-openai",
+                        label: "Codex",
+                        primaryLabel: hasHourlyWindow ? formatWindowDuration(u.hourlyWindowSeconds) : "7d",
+                        secondaryLabel: "7d",
+                        resetAt: hasHourlyWindow ? (u.hourlyResetAt == .distantFuture ? nil : u.hourlyResetAt) : (u.weeklyResetAt == .distantFuture ? nil : u.weeklyResetAt),
+                        weeklyResetAt: u.weeklyResetAt == .distantFuture ? nil : u.weeklyResetAt,
+                        isRefreshing: viewModel.isCodexLoading,
+                        onRefresh: { viewModel.manualRefresh() }
+                    )
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Codex usage")
+                    .accessibilityValue(codexAccessibilitySummary(u))
+                } else {
+                    unavailableCodexUsage
+                }
+            } else {
+                if viewModel.isCodexLoading {
+                    CircularGaugeView(
+                        primaryPercent: 0, primaryLimitReached: false,
+                        showsPrimaryMetric: true,
+                        secondaryPercent: 0, secondaryLimitReached: false,
+                        showsSecondaryMetric: true,
+                        isLoading: true, icon: "logo-openai",
+                        label: "Codex", primaryLabel: "5h", secondaryLabel: "7d",
+                        resetAt: nil, weeklyResetAt: nil, isRefreshing: true, onRefresh: {}
+                    )
+                } else {
+                    unavailableCodexUsage
+                }
+            }
+        } else if viewModel.isCodexRecovering {
+            loadingGauge(icon: "logo-openai", label: "Codex")
+        } else {
+            connectGauge(icon: "logo-openai", label: "Codex") {
+                Task { await viewModel.signIn() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var claudeGaugeSlot: some View {
+        if viewModel.isClaudeAuthenticated {
+            if let u = viewModel.claudeUsage {
+                if u.primaryMetric.kind == .spendLimit,
+                   let spend = u.spendLimit,
+                   spend.used.isFinite, spend.used >= 0,
+                   spend.limit.isFinite, spend.limit > 0 {
+                    BudgetGaugeView(
+                        used: spend.used, limit: spend.limit,
+                        usedText: budgetValue(spend.used, unit: spend.currencyCode),
+                        limitText: budgetValue(spend.limit, unit: spend.currencyCode),
+                        unitLabel: spend.currencyCode?.uppercased() == "USD" ? "monthly spend" : "monthly allowance",
+                        icon: "logo-claude", label: "Claude Code", resetAt: nil,
+                        readingAt: u.fetchedAt,
+                        isRefreshing: viewModel.isClaudeLoading,
+                        onRefresh: { viewModel.manualRefresh() }
+                    )
+                } else {
+                    CircularGaugeView(
+                        primaryPercent: u.usedPercent,
+                        primaryLimitReached: u.limitReached,
+                        showsPrimaryMetric: true,
+                        secondaryPercent: Int(u.sevenDayUtilization?.rounded() ?? 0),
+                        secondaryLimitReached: (u.sevenDayUtilization ?? 0) >= 100,
+                        showsSecondaryMetric: u.primaryMetric.kind != .sevenDay && u.sevenDayUtilization != nil,
+                        isLoading: false,
+                        icon: "logo-claude",
+                        label: "Claude Code",
+                        primaryLabel: u.primaryMetricLabel,
+                        secondaryLabel: "7d",
+                        resetAt: u.resetAt,
+                        weeklyResetAt: u.sevenDayResetsAt,
+                        isRefreshing: viewModel.isClaudeLoading,
+                        onRefresh: { viewModel.manualRefresh() }
+                    )
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Claude usage")
+                    .accessibilityValue(claudeAccessibilitySummary(u))
+                }
+            } else {
+                CircularGaugeView(
+                    primaryPercent: 0, primaryLimitReached: false,
+                    showsPrimaryMetric: true,
+           
