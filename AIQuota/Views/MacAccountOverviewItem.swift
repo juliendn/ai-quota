@@ -249,3 +249,130 @@ struct MacAccountCard: View {
                 }
                 if let plan {
                     Text("\(plan) plan" + (accountLabel.map { " · \($0)" } ?? ""))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.overviewPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let accountLabel {
+                    Text(accountLabel)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.overviewPrimary)
+                }
+            }
+            if let budget {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(budgetSummary(budget))
+                        .font(.system(size: 13).monospacedDigit())
+                        .foregroundStyle(Color.overviewResetAccent)
+                    if let reset = budget.reset {
+                        resetCaption(at: reset)
+                    }
+                }
+            } else if let usage = codexUsage, usage.reportedWindowShape != nil {
+                VStack(alignment: .leading, spacing: 0) {
+                    resetCaption(at: usage.reportedWindowShape == .dual ? usage.hourlyResetAt : usage.weeklyResetAt)
+                    if usage.reportedWindowShape == .dual { resetCaption("7d", at: usage.weeklyResetAt) }
+                }
+            } else if let usage = claudeUsage {
+                VStack(alignment: .leading, spacing: 0) {
+                    resetCaption(at: usage.resetAt)
+                    if secondaryPercent != nil { resetCaption("7d", at: usage.sevenDayResetsAt) }
+                }
+            }
+            if !connected {
+                reconnectButton
+                    .hidden()
+                    .accessibilityHidden(true)
+                    .anchorPreference(key: MacReconnectButtonAnchor.self, value: .bounds) { $0 }
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    // Keep a constant slot in the title so state changes never add a detail
+    // line or reduce the width available to multiline usage/reset captions.
+    private var statusIndicator: some View {
+        Image(systemName: issue == nil ? "info.circle" : "exclamationmark.triangle.fill")
+            .font(.system(size: 13))
+            .foregroundStyle(issue == nil ? Color.overviewSecondary : Color.overviewWarning)
+            .frame(width: 16, height: 16)
+            .opacity(status == nil ? 0 : 1)
+            .help(statusExplanation ?? "")
+            .accessibilityHidden(true) // Included in the full-row label below.
+    }
+
+    private var statusExplanation: String? {
+        guard let status else { return nil }
+        return issue.map { "\(status). \($0)" } ?? status
+    }
+
+    private var status: String? {
+        // Routine refresh keeps saved readings at full strength. Only initial
+        // loading and an explicit reconnect need progress over the row.
+        if loading { return nil }
+        if issue != nil { return hasReading ? "Couldn’t update · Saved reading" : "Couldn’t load allowance" }
+        if !connected { return hasReading ? nil : "Not connected" }
+        if !hasReading { return "No reading yet" }
+        return nil
+    }
+
+    private func resetCaption(_ window: String? = nil, at date: Date?) -> some View {
+        Text(resetText(window, at: date))
+            .font(.system(size: 13).monospacedDigit())
+            .foregroundStyle(Color.overviewResetAccent)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func resetText(_ window: String?, at date: Date?) -> String {
+        let prefix = window.map { "\($0) " } ?? ""
+        guard let date, date != .distantFuture, date != .distantPast else {
+            return "\(prefix)Reset time unavailable"
+        }
+        guard date > .now else { return "\(prefix)Reset unconfirmed" }
+        let day = date.formatted(.dateTime.weekday(.abbreviated))
+        let time = date.formatted(.dateTime.hour().minute())
+        return "\(prefix)Resets \(day) at \(time)"
+    }
+
+    private func amount(_ value: Double, currency: String?) -> String {
+        if let currency { return value.formatted(.currency(code: currency)) }
+        return value.formatted(.number.precision(.fractionLength(0...2)))
+    }
+
+    private func budgetSummary(_ budget: (used: Double, limit: Double, unit: String,
+                                           currency: String?, reset: Date?)) -> String {
+        let verb = account.provider == .claude || budget.currency != nil ? "Spent" : "Used"
+        let suffix = budget.currency == nil && budget.unit.lowercased() == "credit" ? " credits" : ""
+        return "\(verb) \(amount(budget.used, currency: budget.currency)) of \(amount(budget.limit, currency: budget.currency))\(suffix)"
+    }
+
+    private var accessibilitySummary: String {
+        let identity = accountLabel.map { " · \($0)" } ?? ""
+        let period = budget == nil ? primaryLabel : CalendarMonthLabel.spoken(containing: readingAt)
+        let percentage = primaryPercent.map { ", \($0) percent used, \(period)" } ?? ""
+        let secondary = secondaryPercent.map { ", \($0) percent used in 7d" } ?? ""
+        let activity = loading ? (hasReading ? "Refreshing saved reading" : "Connecting") : statusExplanation
+        return "\(serviceName)\(identity)\(plan.map { ", \($0) plan" } ?? "")\(percentage)\(secondary)\(activity.map { ", \($0)" } ?? "")"
+    }
+}
+
+/// Match the iOS resting card, with stronger hover/focus and press feedback.
+struct MacAccountRowSurface: View {
+    let highlighted: Bool
+    let pressed: Bool
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 24)
+            .fill(Color.overviewGlass)
+            .overlay { Color.overviewAccent.opacity(pressed ? 0.05 : highlighted ? 0.03 : 0) }
+            .overlay(alignment: .top) {
+                Color.overviewGlassHighlight.frame(height: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 24))
+            .allowsHitTesting(false)
+    }
+}
+
+struct MacAccountRowButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let highlighted: Bool
+
