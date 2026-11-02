@@ -1,1 +1,372 @@
-PLACEHOLDER
+import SwiftUI
+#if !APP_STORE
+import Sparkle
+#endif
+import AppKit
+import WidgetKit
+import AIQuotaKit
+
+@main
+struct AIQuotaApp: App {
+    @NSApplicationDelegateAdaptor(AnalyticsAppDelegate.self) private var analyticsDelegate
+    @State private var viewModel: QuotaViewModel
+    #if DEMO_MODE
+    @State private var demoDriver: DemoDriver
+    #endif
+
+    // Sparkle updater — must be held at app scope for its lifetime.
+    // Scheduled checks surface as a quiet badge in AIQuota. Sparkle's standard
+    // window is shown only after the user chooses the update from the popover.
+    private let updaterViewModel: UpdaterViewModel
+    #if !APP_STORE
+    private let gentleDriverDelegate: GentleSparkleDriverDelegate
+    private let updaterController: SPUStandardUpdaterController
+    #endif
+
+    init() {
+        #if !APP_STORE
+        LegacyWebKitMigration.migrateIfNeeded(bundleIdentifier: "com.niederme.AIQuota")
+        LegacyDefaultsMigration.migrateIfNeeded(bundleIdentifier: "com.niederme.AIQuota")
+        LaunchServicesSync.repairIfNeeded()
+        #endif
+        #if DEMO_MODE
+        let demoSession = DemoSession.shared
+        _viewModel = State(initialValue: demoSession.viewModel)
+        _demoDriver = State(initialValue: demoSession.driver)
+        #else
+        _viewModel = State(initialValue: QuotaViewModel())
+        #endif
+        let updaterViewModel = UpdaterViewModel()
+        self.updaterViewModel = updaterViewModel
+        #if !APP_STORE
+        let gentleDriverDelegate = GentleSparkleDriverDelegate(updaterViewModel: updaterViewModel)
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: nil,
+            userDriverDelegate: gentleDriverDelegate
+        )
+        updaterViewModel.connect(to: updaterController.updater)
+        self.gentleDriverDelegate = gentleDriverDelegate
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-AIQuotaShowUpdateBadge") {
+            updaterViewModel.noteAvailableUpdate(version: "1.9.25")
+        }
+        #endif
+        // Silently check for a newer version on every launch.
+        let updater = updaterController.updater
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            updater.checkForUpdatesInBackground()
+        }
+        #endif
+        DispatchQueue.main.async {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
+    var body: some Scene {
+        MenuBarExtra {
+            PopoverView()
+                .environment(viewModel)
+                .environment(updaterViewModel)
+                .onAppear {
+                    viewModel.recordDailyActiveIfNeeded()
+                    // Demo builds never fetch real usage — a live refresh here
+                    // would overwrite the scripted frames with actual data.
+                    #if !DEMO_MODE
+                    viewModel.refreshOnPopoverOpenIfNeeded()
+                    #endif
+                    let enabled = viewModel.settings.analyticsEnabled
+                    let params = viewModel.analyticsContextParams
+                    Task {
+                        await AnalyticsClient.shared.send(
+                            "popover_opened",
+                            params: params,
+                            enabled: enabled
+                        )
+                    }
+                }
+                #if DEMO_MODE
+                .background {
+                    Button("") { demoDriver.reset() }
+                        .keyboardShortcut("r", modifiers: .command)
+                        .hidden()
+                }
+                #endif
+        } label: {
+            MenuBarStatusLabel(viewModel: viewModel, updaterViewModel: updaterViewModel)
+                #if !DEMO_MODE
+                .onboardingLauncher(viewModel: viewModel)
+                #endif
+        }
+        .menuBarExtraStyle(.window)
+
+        Window("Get Started", id: "onboarding") {
+            OnboardingView()
+                .environment(viewModel)
+                .background(WindowVibrancyInstaller())
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+
+        Window("About AIQuota", id: "about") {
+            AboutSettingsPane().frame(width: 440, height: 560)
+        }
+        .windowResizability(.contentSize)
+        .commands { AIQuotaAboutCommands() }
+
+        Settings {
+            SettingsView()
+                .environment(viewModel)
+                .environment(updaterViewModel)
+        }
+        .defaultSize(width: 600, height: 650)
+        .windowResizability(.contentMinSize)
+    }
+
+}
+
+#if DEMO_MODE
+/// Keep playback and its view model alive for the whole process, regardless of
+/// how SwiftUI recreates the menu bar label or popover.
+@MainActor
+private final class DemoSession {
+    static let shared = DemoSession()
+
+    let viewModel: QuotaViewModel
+    let driver: DemoDriver
+
+    private init() {
+        let viewModel = QuotaViewModel()
+        let driver = DemoDriver()
+        self.viewModel = viewModel
+        self.driver = driver
+        driver.startIfNeeded(driving: viewModel)
+    }
+}
+#endif
+
+/// Keep the status item's observation inside a View so usage frames redraw
+/// the icon even when the popover's view hierarchy is not present.
+private struct MenuBarStatusLabel: View {
+    let viewModel: QuotaViewModel
+    let updaterViewModel: UpdaterViewModel
+    @State private var orderedAccounts = AccountRegistry.orderedAccounts()
+
+    var body: some View {
+        content
+            .onAppear { orderedAccounts = AccountRegistry.orderedAccounts() }
+            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: RunLoop.main)) { _ in
+                orderedAccounts = AccountRegistry.orderedAccounts()
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let selected = viewModel.settings.menuBarAccounts(in: orderedAccounts) {
+            if selected.isEmpty {
+                Image("AppBrandIcon").resizable().frame(width: 20, height: 20)
+                    .help("AIQuota")
+            } else {
+                MultiMenuBarIconView(
+                    inputs: selected.map { menuBarGaugeInput(for: $0) },
+                    showsUpdateBadge: updaterViewModel.availableUpdateVersion != nil
+                )
+                .help(selected.map {
+                    "\($0.provider == .codex ? "Codex" : "Claude Code") · \($0.displayLabel)"
+                }.joined(separator: "\n"))
+            }
+        } else if shouldShowBothMenuBarGauges {
+            DoubleMenuBarIconView(
+                left: menuBarGaugeInput(for: .codex),
+                right: menuBarGaugeInput(for: .claude),
+                showsUpdateBadge: updaterViewModel.availableUpdateVersion != nil
+            )
+        } else {
+            MenuBarIconView(
+                input: menuBarGaugeInput(for: resolvedMenuBarService),
+                showsUpdateBadge: updaterViewModel.availableUpdateVersion != nil
+            )
+        }
+    }
+
+    private func menuBarGaugeInput(for account: ConnectedAccount) -> MenuBarGaugeInput {
+        let session = viewModel.additionalAccounts.first { $0.id == account.id }
+        let primary = account.connectionKind == .legacyPrimary
+        let loading = session?.isLoading ??
+            (account.provider == .codex ? viewModel.isCodexLoading : viewModel.isClaudeLoading)
+        if account.provider == .codex {
+            let usage = session?.codexUsage ?? (primary ? viewModel.codexUsage : nil)
+            if let budget = usage?.displayableMonthlyBudget, let percent = budget.utilization {
+                let used = Int(percent.rounded())
+                return MenuBarGaugeInput(usedPercent: used, secondaryPercent: 0,
+                                         limitReached: used >= 100, isLoading: loading,
+                                         worstPercent: used, showsSecondaryMetric: false)
+            }
+            let dual = usage?.reportedWindowShape == .dual
+            let used = dual ? (usage?.hourlyUsedPercent ?? 0) : (usage?.weeklyUsedPercent ?? 0)
+            let weekly = usage?.weeklyUsedPercent ?? 0
+            return MenuBarGaugeInput(usedPercent: used, secondaryPercent: weekly,
+                                     limitReached: usage?.limitReached ?? false, isLoading: loading,
+                                     worstPercent: max(used, weekly), showsSecondaryMetric: dual)
+        }
+        let usage = session?.claudeUsage ?? (primary ? viewModel.claudeUsage : nil)
+        let used = usage?.usedPercent ?? 0
+        let weekly = Int(usage?.sevenDayUtilization?.rounded() ?? 0)
+        return MenuBarGaugeInput(usedPercent: used, secondaryPercent: weekly,
+                                 limitReached: usage?.limitReached ?? false, isLoading: loading,
+                                 worstPercent: max(used, weekly),
+                                 showsSecondaryMetric: usage?.primaryMetric.kind != .sevenDay &&
+                                     usage?.sevenDayUtilization != nil)
+    }
+
+    private var shouldShowBothMenuBarGauges: Bool {
+        viewModel.settings.menuBarDisplayMode == .both
+            && viewModel.enrolledServices.count >= 2
+    }
+
+    private func menuBarGaugeInput(for service: ServiceType) -> MenuBarGaugeInput {
+        switch service {
+        case .codex:
+            let weeklyOnly = viewModel.codexUsage?.reportsWeeklyOnlyWindow == true
+            let used = weeklyOnly ? (viewModel.codexUsage?.weeklyUsedPercent ?? 0) : (viewModel.codexUsage?.hourlyUsedPercent ?? 0)
+            let secondary = viewModel.codexUsage?.weeklyUsedPercent ?? 0
+            return MenuBarGaugeInput(
+                usedPercent: used,
+                secondaryPercent: secondary,
+                limitReached: viewModel.codexUsage?.limitReached ?? false,
+                isLoading: viewModel.isLoading,
+                worstPercent: max(used, secondary),
+                showsSecondaryMetric: !weeklyOnly
+            )
+        case .claude:
+            let used = viewModel.claudeUsage?.usedPercent ?? 0
+            let secondary = Int(viewModel.claudeUsage?.sevenDayUtilization?.rounded() ?? 0)
+            return MenuBarGaugeInput(
+                usedPercent: used,
+                secondaryPercent: secondary,
+                limitReached: viewModel.claudeUsage?.limitReached ?? false,
+                isLoading: viewModel.isLoading,
+                worstPercent: max(used, secondary)
+            )
+        case .cursor:
+            let used = viewModel.cursorUsage?.usedPercent ?? 0
+            return MenuBarGaugeInput(
+                usedPercent: used,
+                secondaryPercent: 0,
+                limitReached: viewModel.cursorUsage?.limitReached ?? false,
+                isLoading: viewModel.isCursorLoading,
+                worstPercent: used,
+                showsSecondaryMetric: false
+            )
+        }
+    }
+
+    /// Respects `settings.menuBarService` but falls back gracefully.
+    private var resolvedMenuBarService: ServiceType {
+        let preferred = viewModel.settings.menuBarService
+        // Use preferred service if enrolled; otherwise fall back to any enrolled service.
+        if viewModel.enrolledServices.contains(preferred) { return preferred }
+        return viewModel.enrolledServices.first ?? preferred
+    }
+}
+
+// MARK: - Sparkle gentle reminders delegate
+
+/// Opts AIQuota into Sparkle's "gentle reminders" mode so scheduled update
+/// alerts never steal focus from the user's active app. Required for dockless
+/// menu bar apps per Sparkle documentation.
+#if !APP_STORE
+final class GentleSparkleDriverDelegate: NSObject, SPUStandardUserDriverDelegate {
+    private let updaterViewModel: UpdaterViewModel
+
+    init(updaterViewModel: UpdaterViewModel) {
+        self.updaterViewModel = updaterViewModel
+    }
+
+    var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    func standardUserDriverShouldHandleShowingScheduledUpdate(
+        _ update: SUAppcastItem,
+        andInImmediateFocus immediateFocus: Bool
+    ) -> Bool {
+        false
+    }
+
+    func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool,
+        forUpdate update: SUAppcastItem,
+        state: SPUUserUpdateState
+    ) {
+        guard !handleShowingUpdate, !state.userInitiated else { return }
+        let updaterViewModel = updaterViewModel
+        let version = update.displayVersionString
+        Task { @MainActor [updaterViewModel, version] in
+            updaterViewModel.noteAvailableUpdate(version: version)
+        }
+    }
+
+    func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
+        let updaterViewModel = updaterViewModel
+        Task { @MainActor [updaterViewModel] in updaterViewModel.clearAvailableUpdate() }
+    }
+
+    func standardUserDriverWillFinishUpdateSession() {
+        let updaterViewModel = updaterViewModel
+        Task { @MainActor [updaterViewModel] in updaterViewModel.clearAvailableUpdate() }
+    }
+}
+
+#endif
+
+// MARK: - Onboarding launcher
+
+private struct OnboardingLauncherModifier: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+    let viewModel: QuotaViewModel
+
+    func body(content: Content) -> some View {
+        content.task {
+            // Brief pause so the SwiftUI scene graph is ready to open windows at launch.
+            try? await Task.sleep(for: .milliseconds(200))
+            if viewModel.shouldShowOnboarding {
+                viewModel.markOnboardingTriggered()
+                openWindow(id: "onboarding")
+            }
+        }
+    }
+}
+
+private extension View {
+    func onboardingLauncher(viewModel: QuotaViewModel) -> some View {
+        modifier(OnboardingLauncherModifier(viewModel: viewModel))
+    }
+}
+
+// MARK: - Window vibrancy installer
+
+/// Zero-size view that reaches up to the hosting NSWindow and enables
+/// vibrancy + transparency so SwiftUI's .thinMaterial fills the whole window.
+private struct WindowVibrancyInstaller: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // Defer past SwiftUI's own window-configuration pass so our overrides win
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            // Float above other apps so it's never lost behind them
+            window.level = .floating
+        }
+    }
+}
+
+private struct AIQuotaAboutCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About AIQuota") { openWindow(id: "about") }
+        }
+    }
+}
