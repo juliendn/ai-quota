@@ -1,1 +1,1 @@
-ping-43k-prep
+@file:///tmp/ping-content.txt
