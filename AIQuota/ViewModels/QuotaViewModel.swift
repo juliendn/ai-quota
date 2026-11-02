@@ -248,4 +248,121 @@ final class QuotaViewModel {
         AccountNameSuggestion.make(
             service: provider.displayName,
             plan: plan,
-            existingLabels: AccountRegistry.accounts(for: provider).filter { $0.id != a
+            existingLabels: AccountRegistry.accounts(for: provider).filter { $0.id != accountID }.map(\.displayLabel)
+        )
+    }
+
+    /// Explains why an add-account attempt ended without a new account.
+    var connectAccountNotice: String?
+
+    /// Connect and fetch this account's plan before offering its name in onboarding or Settings.
+    func connectAccount(for provider: ServiceType) async -> ConnectedAccount? {
+        guard !isReadOnlyPreview, !Self.isDemoBuild else { return nil }
+        if primaryAccount(for: provider) == nil {
+            switch provider {
+            case .codex: await signIn()
+            case .claude: await signInClaude()
+            case .cursor: await signInCursor()
+            }
+            // The auth-state observer can start the first refresh before signIn's
+            // refresh call. Wait for that request too, so naming sees its plan.
+            while {
+                switch provider {
+                case .codex: isCodexLoading
+                case .claude: isClaudeLoading
+                case .cursor: isCursorLoading
+                }
+            }() {
+                do { try await Task.sleep(for: .milliseconds(100)) }
+                catch { return nil }
+            }
+            let authenticated: Bool = {
+                switch provider {
+                case .codex: isCodexAuthenticated
+                case .claude: isClaudeAuthenticated
+                case .cursor: isCursorAuthenticated
+                }
+            }()
+            guard authenticated, !Task.isCancelled else { return nil }
+            ensurePrimaryAccount(for: provider)
+            guard let account = primaryAccount(for: provider) else { return nil }
+            let plan: String? = {
+                switch provider {
+                case .codex: codexUsage?.displayPlan
+                case .claude: claudeUsage?.planDisplayName
+                case .cursor: cursorUsage?.planDisplayName
+                }
+            }()
+            renameAccount(id: account.id, to: nameFromConnectedPlan(for: provider, accountID: account.id, plan: plan))
+            return AccountRegistry.account(id: account.id)
+        } else {
+            if provider == .cursor {
+                connectAccountNotice = "Multiple Cursor accounts aren't supported yet."
+                return nil
+            }
+            return await addAccount(for: provider)
+        }
+    }
+
+    private func addAccount(for provider: ServiceType) async -> ConnectedAccount? {
+        await bindPrimaryIdentity(for: provider)
+        let existingIDs = AccountRegistry.accounts().map(\.id)
+        let account = AccountRegistry.upsert(
+            provider: provider,
+            displayLabel: AccountNameSuggestion.make(
+                service: provider.displayName, plan: nil,
+                existingLabels: AccountRegistry.accounts(for: provider).map(\.displayLabel)
+            ),
+            authSource: .webSession
+        )
+        settings.registerMenuBarAccount(id: account.id, existingAccountIDs: existingIDs)
+        saveSettings()
+        let session = AdditionalAccountSession(account: account)
+        additionalAccounts.append(session)
+        await session.signIn()
+        guard session.isAuthenticated, session.account.workspaceID != nil, !Task.isCancelled else {
+            // Never keep a card that did not finish connecting. A duplicate
+            // would otherwise sit beside the original as "Couldn't load allowance".
+            if session.isDuplicateIdentity {
+                connectAccountNotice = "That \(provider == .codex ? "Codex" : "Claude") account is already connected."
+            }
+            await removeAccount(id: account.id)
+            return nil
+        }
+        let plan = provider == .codex ? session.codexUsage?.displayPlan : session.claudeUsage?.planDisplayName
+        renameAccount(id: account.id, to: nameFromConnectedPlan(for: provider, accountID: account.id, plan: plan))
+        startAutoRefresh(immediateRefresh: false)
+        return AccountRegistry.account(id: account.id)
+    }
+
+    func saveConnectedAccount(id: String, name: String, showInMenuBar: Bool?) {
+        renameAccount(id: id, to: name)
+        if let showInMenuBar {
+            var ids = settings.menuBarAccountIDs ?? []
+            ids.removeAll { $0 == id }
+            if showInMenuBar { ids.append(id) }
+            settings.menuBarAccountIDs = ids
+            saveSettings()
+        }
+    }
+
+    private func bindPrimaryIdentity(for provider: ServiceType) async {
+        guard var account = primaryAccount(for: provider) else { return }
+        let identity: String?
+        switch provider {
+        case .codex:
+            identity = try? await codexCoordinator.accessContext().accountID
+        case .claude:
+            identity = try? await claudeCoordinator.requestContext().orgId
+        case .cursor:
+            if let context = try? await cursorCoordinator.requestContext() {
+                identity = context.email ?? (try? CursorAPI.jwtSubject(context.accessToken))
+            } else {
+                identity = nil
+            }
+        }
+        guard let identity, !identity.isEmpty else { return }
+        if provider == .codex {
+            guard account.workspaceID == nil,
+                  !AccountRegistry.accounts(for: provider).contains(where: {
+            
