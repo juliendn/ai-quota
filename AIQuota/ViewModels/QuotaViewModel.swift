@@ -604,4 +604,105 @@ final class QuotaViewModel {
         get { codexError }
         set { codexError = newValue }
     }
-    var isAuthenticate
+    var isAuthenticated: Bool { isCodexAuthenticated }
+
+    // MARK: - Last refreshed
+
+    var lastRefreshedAt: Date?
+
+    // MARK: - Private
+
+    private var refreshTask: Task<Void, Never>?
+    /// Incremented on each manual refresh so the previous task's `defer` doesn't
+    /// clear `isLoading` after the new request has already started.
+    private var codexRefreshGeneration = 0
+    private var claudeRefreshGeneration = 0
+
+    /// Tracks whether the last known network path was unsatisfied so we can
+    /// detect a transition back online and refresh immediately.
+    private var wasOffline = false
+    /// Set to true once NWPathMonitor fires its first update. Prevents false-positive
+    /// "No network connection" banners at launch before the monitor has settled.
+    private var pathMonitorReady = false
+    private let pathMonitor = NWPathMonitor()
+    private let pathMonitorQueue = DispatchQueue(label: "ai.quota.pathmonitor")
+    private var appLifecycleObservers: [NSObjectProtocol] = []
+    private var workspaceLifecycleObservers: [NSObjectProtocol] = []
+    private let popoverOpenRefreshMinimumInterval: TimeInterval = 30
+    private let recentServiceActivityDuration: TimeInterval = 10 * 60
+    private var lastServiceActivityAt: Date?
+
+    // MARK: - Init
+
+    init(readOnlyPreview: Bool = false) {
+        let claude = ClaudeAuthCoordinator()
+        let codex  = CodexAuthCoordinator()
+        let cursor = CursorAuthCoordinator()
+
+        self.claudeCoordinator = claude
+        self.codexCoordinator  = codex
+        self.cursorCoordinator = cursor
+        self.claudeClient      = ClaudeClient(coordinator: claude)
+        self.codexClient       = OpenAIClient(coordinator: codex)
+        self.cursorClient      = CursorClient(coordinator: cursor)
+        self.resetCoordinator  = AppResetCoordinator(claude: claude, codex: codex, cursor: cursor)
+        #if DEBUG
+        isReadOnlyPreview = readOnlyPreview
+        if readOnlyPreview { return }
+        #endif
+        Task { await QuotaInsightStore.shared.prepare() }
+        AccountRegistry.migrateLegacyAccountsIfNeeded()
+        for provider in enrolledServices { ensurePrimaryAccount(for: provider, selectNewAccount: false) }
+        self.additionalAccounts = AccountRegistry.accounts()
+            .filter { $0.connectionKind == .isolated }
+            .map(AdditionalAccountSession.init(account:))
+        initializeMenuBarAccountsIfNeeded()
+        self.isCodexRecoveryPending = enrolledServices.contains(.codex)
+        self.isClaudeRecoveryPending = enrolledServices.contains(.claude)
+        self.isCursorRecoveryPending = enrolledServices.contains(.cursor)
+
+        #if !DEMO_MODE
+        // Load cached data immediately
+        if let account = primaryAccount(for: .codex), let identity = account.workspaceID,
+           let cached = SharedDefaults.loadCachedUsage(forAccountID: account.id), cached.accountID == identity {
+            codexUsage = cached
+        }
+        claudeUsage = SharedDefaults.loadCachedClaudeUsage()
+        cursorUsage = SharedDefaults.loadCachedCursorUsage()
+
+        // Normalise any mixed per-threshold notification state from pre-consolidation builds.
+        // OR-resolves each group (any=true → all-true) so aggregate toggles always see
+        // a clean on/off state from the first render.
+        let preNorm = settings
+        settings.notifications.normalizeThresholds()
+        if settings != preNorm { SharedDefaults.saveSettings(settings) }
+
+        // Observe coordinator state streams and drive UI state + auto-refresh.
+        Task { [weak self] in
+            guard let self else { return }
+            for await state in claudeCoordinator.stateStream {
+                await MainActor.run {
+                    self.claudeState = state
+                    if state == .signingIn || state == .signingOut || state == .resetting {
+                        self.claudeRefreshGeneration += 1
+                        self.isClaudeLoading = false
+                    }
+                    // Auto-enroll on first successful auth (handles migration from pre-enrollment builds)
+                    if state == .authenticated && !self.enrolledServices.contains(.claude) {
+                        self.enrolledServices.insert(.claude)
+                        SharedDefaults.enrollService(.claude)
+                        self.trackServiceConnected(.claude)
+                    }
+                    if state == .authenticated {
+                        self.ensurePrimaryAccount(for: .claude)
+                        self.initializeMenuBarAccountsIfNeeded()
+                        self.claudeRecoveryExhausted = false
+                        if self.refreshTask == nil {
+                            self.startAutoRefresh()
+                        }
+                    }
+                    if state == .signedOutByUser ||
+                        (state == .unauthenticated && !self.isClaudeRecoveryPending) {
+                        self.clearClaudeUsageSnapshot()
+                    }
+      
