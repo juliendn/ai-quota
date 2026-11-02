@@ -351,3 +351,72 @@ private struct SettingsAccountDetail: View {
                 LabeledContent("Service", value: account.provider.displayName)
                 if let identity = account.workspaceID {
                     LabeledContent("Workspace ID", value: identity).textSelection(.enabled)
+                }
+                Toggle("Show in menu bar", isOn: Binding(get: {
+                    viewModel.settings.menuBarAccountIDs?.contains(account.id) == true
+                }, set: { shown in
+                    var ids = viewModel.settings.menuBarAccountIDs ?? []
+                    ids.removeAll { $0 == account.id }
+                    if shown { ids.append(account.id) }
+                    viewModel.settings.menuBarAccountIDs = ids
+                }))
+            }
+            Section("Connection") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(status.connected ? "Signed in" : "Not signed in", systemImage: status.connected ? "checkmark.circle.fill" : "person.crop.circle.badge.exclamationmark")
+                        .foregroundStyle(status.connected ? Color.green : .secondary)
+                    if let issue = status.issue {
+                        Label(issue, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                            .font(.callout)
+                    }
+                }
+                if busy { ProgressView().controlSize(.small) }
+                else if status.connected {
+                    Button("Refresh Usage") {
+                        if let session = status.session { Task { await session.refresh(userInitiated: true) } }
+                        else { viewModel.manualRefresh() }
+                    }
+                    .settingsAction()
+                    if account.provider == .codex,
+                       (account.connectionKind == .isolated ? status.session?.issue != nil : viewModel.codexError?.needsReconnect == true) {
+                        Button("Reconnect…", action: reconnect).settingsAction()
+                    }
+                    Button("Sign Out…", role: .destructive) { pendingAction = "Sign Out" }
+                        .settingsAction()
+                } else {
+                    Button("Sign In…", action: reconnect)
+                    .settingsAction()
+                }
+                if account.provider == .claude, account.connectionKind == .legacyPrimary,
+                   AppDistribution.allowsHostCredentialDiscovery {
+                    Toggle(isOn: $reuseClaudeCodeKeychain) {
+                        Text("Reuse Claude Code Keychain credentials")
+                        Text("Uses Claude Code’s saved sign-in when macOS allows access without a permission prompt.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Reuse Claude Code Keychain credentials")
+                }
+            }
+            if account.provider == .codex {
+                Section { Link("Codex Resets…", destination: CodexResetNotice.website).foregroundColor(.brand) }
+            }
+            if account.connectionKind == .isolated {
+                Section {
+                    Button("Remove Account…", role: .destructive) { pendingAction = "Remove Account" }
+                        .settingsAction()
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { name = AccountRegistry.account(id: account.id)?.displayLabel ?? account.displayLabel }
+        .onDisappear(perform: saveName)
+        .confirmationDialog("\(pendingAction ?? "Remove Account")?", isPresented: Binding(get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }), titleVisibility: .visible) {
+            Button(pendingAction ?? "Remove Account", role: .destructive) {
+                let action = pendingAction
+                pendingAction = nil
+                busy = true
+                Task {
+                    if account.connectionKind == .legacyPrimary {
+                        if account.provider == .codex { viewModel.signOut() }
+                        else { viewModel.signOutClaude() }
+                    } else if action == "Remove Account" { await viewModel.removeAccount(id: account.id) }
