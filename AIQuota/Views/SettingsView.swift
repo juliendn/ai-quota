@@ -884,3 +884,96 @@ struct NotificationInlineControls: View {
                     !enabled.wrappedValue ? 0 : minimum.wrappedValue == 0 ? 2 : 1
                 }, set: { mode in
                     enabled.wrappedValue = mode != 0
+                    if mode == 2 { minimum.wrappedValue = 0 }
+                    else if mode == 1 && minimum.wrappedValue == 0 { minimum.wrappedValue = 90 }
+                })) {
+                    Text("Off").tag(0)
+                    Text("Only near the limit").tag(1)
+                    Text("Every reset").tag(2)
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+            }
+            if enabled.wrappedValue && minimum.wrappedValue > 0 {
+                HStack(spacing: 8) {
+                    Text("Minimum usage")
+                        .foregroundStyle(.secondary)
+                    SettingsPercentageField(label: "Minimum usage for reset alerts", value: Binding(get: {
+                        minimum.wrappedValue
+                    }, set: { value in
+                        // A field losing focus must not overwrite the Every reset sentinel.
+                        if enabled.wrappedValue && minimum.wrappedValue > 0 {
+                            minimum.wrappedValue = value
+                        }
+                    }))
+                    .help("Send a reset reminder only if usage reached this percentage before the reset.")
+                }
+                .padding(.leading, 16)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
+    private func notificationOptionGroup<Content: View>(
+        _ title: String,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.body.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+            VStack(alignment: .leading, spacing: 10, content: content)
+                .padding(.leading, 12)
+        }
+    }
+
+    private func notificationCheckbox(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+            .toggleStyle(.checkbox)
+    }
+}
+
+struct LaunchAtLoginToggle: View {
+    @State private var isEnabled = (SMAppService.mainApp.status == .enabled)
+
+    var body: some View {
+        Toggle("Launch at login", isOn: $isEnabled)
+            .onChange(of: isEnabled) { _, newValue in
+                do {
+                    if newValue { try SMAppService.mainApp.register() }
+                    else        { try SMAppService.mainApp.unregister() }
+                } catch {
+                    isEnabled = !newValue
+                }
+            }
+    }
+}
+
+
+private struct SettingsPercentageField: View {
+    let label: String
+    @Binding var value: Int
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+    var body: some View {
+        HStack(spacing: 5) {
+            TextField("Percent used", text: $draft)
+                .labelsHidden().textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing).frame(width: 42)
+                .focused($focused).onSubmit(commit)
+                .accessibilityLabel("\(label), percent used")
+            Text("%")
+            Stepper(label, value: $value, in: 5...100, step: 5).labelsHidden()
+        }
+        .fixedSize()
+        .onAppear { draft = String(value) }
+        .onChange(of: focused) { _, focused in if !focused { commit() } }
+        .onChange(of: value) { _, value in draft = String(value) }
+        .onDisappear(perform: commit)
+    }
+    private func commit() {
+        value = min(100, max(5, Int(draft) ?? value))
+        draft = String(value)
+    }
+}
