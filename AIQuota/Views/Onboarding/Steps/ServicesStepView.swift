@@ -74,11 +74,11 @@ struct ServicesStepView: View {
         let providerAccounts = accounts.filter { $0.provider == provider }
         return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
-                Image(provider == .codex ? "logo-openai" : "logo-claude")
+                Image(provider == .codex ? "logo-openai" : provider == .claude ? "logo-claude" : "logo-cursor")
                     .resizable().scaledToFit().frame(width: 28, height: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(provider.displayName).font(.headline)
-                    Text(provider == .codex ? "ChatGPT / OpenAI" : "Anthropic / claude.ai")
+                    Text(provider == .codex ? "ChatGPT / OpenAI" : provider == .claude ? "Anthropic / claude.ai" : "Cursor IDE")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -119,7 +119,13 @@ struct ServicesStepView: View {
                 if connecting { ProgressView().controlSize(.small) }
             }
             if providerAccounts.isEmpty {
-                let issue = provider == .codex ? viewModel.codexError : viewModel.claudeError
+                let issue: NetworkError? = {
+                    switch provider {
+                    case .codex: viewModel.codexError
+                    case .claude: viewModel.claudeError
+                    case .cursor: viewModel.cursorError
+                    }
+                }()
                 if let issue {
                     Text(issue.localizedDescription).font(.footnote).foregroundStyle(.secondary)
                 }
@@ -136,7 +142,8 @@ struct ServicesStepView: View {
         Task {
             if account.connectionKind == .isolated { await viewModel.reconnectAccount(id: account.id) }
             else if account.provider == .codex { await viewModel.signIn() }
-            else { await viewModel.signInClaude() }
+            else if account.provider == .claude { await viewModel.signInClaude() }
+            else { await viewModel.signInCursor() }
             connecting = false
             reload()
         }
