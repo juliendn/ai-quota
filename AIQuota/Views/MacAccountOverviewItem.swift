@@ -124,3 +124,128 @@ struct MacAccountCard: View {
         if account.provider == .claude, claudeUsage?.primaryMetric.kind == .spendLimit,
            let value = claudeUsage?.spendLimit,
            value.used.isFinite, value.limit.isFinite, value.limit > 0 {
+            return (value.used, value.limit, "monthly spend", value.currencyCode, nil)
+        }
+        if account.provider == .cursor,
+           let used = cursorUsage?.planUsedUSD, let limit = cursorUsage?.planLimitUSD,
+           limit > 0 {
+            return (used, limit, "monthly spend", "USD", cursorUsage?.billingCycleEnd)
+        }
+        return nil
+    }
+    private var primaryPercent: Int? {
+        if let budget { return Int((budget.used / budget.limit * 100).rounded()) }
+        if let usage = codexUsage {
+            switch usage.reportedWindowShape {
+            case .dual: return usage.hourlyUsedPercent
+            case .weeklyOnly: return usage.weeklyUsedPercent
+            case nil: return nil
+            }
+        }
+        if let cursorUsage { return cursorUsage.usedPercent }
+        return claudeUsage?.usedPercent
+    }
+    private var secondaryPercent: Int? {
+        if codexUsage?.reportedWindowShape == .dual { return codexUsage?.weeklyUsedPercent }
+        if let usage = claudeUsage, usage.primaryMetric.kind != .sevenDay,
+           let weekly = usage.sevenDayUtilization { return Int(weekly.rounded()) }
+        return nil
+    }
+    private var primaryLabel: String {
+        if budget != nil { return CalendarMonthLabel.compact(containing: readingAt) }
+        if account.provider == .codex { return codexUsage?.reportedWindowShape == .dual ? "5h" : "7d" }
+        if account.provider == .cursor { return cursorUsage?.primaryMetricLabel ?? "Plan" }
+        return claudeUsage?.primaryMetricLabel ?? "5h"
+    }
+
+    private var readingAt: Date {
+        codexUsage?.fetchedAt ?? claudeUsage?.fetchedAt ?? cursorUsage?.fetchedAt ?? .now
+    }
+
+    private var showsTokenHistory: Bool {
+        guard connected || loading, account.provider == .codex, let tokenHistory,
+              tokenHistory.isAttributed(toWorkspaceID: account.workspaceID) else { return false }
+        return CodexTokenHistoryView.hasVisibleData(tokenHistory)
+    }
+
+    var body: some View {
+        Button(action: connected || hasReading ? open : reconnect) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top, spacing: 20) {
+                    MacAccountDial(icon: icon, primaryPercent: connected || loading ? primaryPercent : nil,
+                                   primaryLabel: primaryLabel, secondaryPercent: connected || loading ? secondaryPercent : nil,
+                                   loading: loading, connected: connected || (loading && hasReading),
+                                   hasIssue: !loading && issue != nil,
+                                   showsSecondaryPlaceholder: secondaryPercent != nil || !hasReading)
+                        .help(budget == nil ? primaryLabel : "\(CalendarMonthLabel.spoken(containing: readingAt)). Reset uses the provider's date.")
+                    details
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                if showsTokenHistory, let tokenHistory {
+                    CodexTokenHistoryView(history: tokenHistory,
+                                          availableWidth: availableWidth + 2 * MacAccountDial.strokeOutset)
+                        .padding(.horizontal, -MacAccountDial.strokeOutset)
+                        .padding(.top, 8)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 21)
+            .padding(.bottom, showsTokenHistory ? 8 : 21)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .contentShape(RoundedRectangle(cornerRadius: 24))
+            .overlay {
+                if showsProgress {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(Color.overviewPrimary)
+                        .accessibilityHidden(true)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .buttonStyle(MacAccountRowButtonStyle(highlighted: highlighted))
+        .focusEffectDisabled()
+        .disabled(awaitingConnection)
+        .accessibilityLabel(accessibilitySummary)
+        .accessibilityValue(loading ? "Busy, updating allowance" : "")
+        .accessibilityAddTraits(loading ? .updatesFrequently : [])
+        .accessibilityHint(connected || hasReading ? "Open account details" : "Reconnect account")
+        // Overlay the secondary control as a sibling of the full-row Button.
+        // This keeps its action independent and avoids nesting native buttons.
+        .overlayPreferenceValue(MacReconnectButtonAnchor.self) { anchor in
+            if let anchor {
+                GeometryReader { geometry in
+                    let bounds = geometry[anchor]
+                    reconnectButton
+                        .frame(width: bounds.width, height: bounds.height)
+                        .position(x: bounds.midX, y: bounds.midY)
+                }
+            }
+        }
+    }
+
+    private var reconnectButton: some View {
+        Button("Reconnect", action: reconnect)
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .tint(Color.overviewAccent)
+            .disabled(loading)
+            .accessibilityLabel("Reconnect \(serviceName)" + (accountLabel.map { " · \($0)" } ?? ""))
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(serviceName)
+                        .font(.system(size: 20, weight: .semibold))
+                        .tracking(-0.25)
+                        .foregroundStyle(Color.overviewPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    statusIndicator
+                }
+                if let plan {
+                    Text("\(plan) plan" + (accountLabel.map { " · \($0)" } ?? ""))
